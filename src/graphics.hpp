@@ -4,25 +4,25 @@
 
 typedef struct SpoutMeta
 {
-    int width;
-    int height;
-    DWORD format;
+    unsigned int width;
+    unsigned int height;
+    DXGI_FORMAT format;
     HANDLE handle;
 } SpoutMeta_t;
 
 class GraphicsSystem {
 public:
-    GraphicsChain() {
-        // Constructor implementation
+    GraphicsSystem(std::shared_ptr<spdlog::logger>& logger) {
+        m_Logger = logger;
     }
 
-    ~GraphicsChain() {
+    ~GraphicsSystem() {
         // Destructor implementation
     }
 
     void InitializeSystem(HWND &hwnd) {
         if (m_Device) {
-            shutdown();
+            Shutdown();
         }
 
         HRESULT hr;
@@ -77,7 +77,7 @@ public:
                 m_Context.GetAddressOf()
             );
             if (FAILED(hr)) {
-                std::printf("Failed to create D3D11 device\n");
+                m_Logger->error("Failed to create D3D11 device\n");
                 return;
             }
 
@@ -127,16 +127,16 @@ public:
 
         }
 
-        result = m_SwapChain->GetBuffer(0, IID_PPV_ARGS(m_BackBuffer.GetAddressOf()));
-        if (FAILED(result)) {
-            spdlog::error("Failed to get back buffer: {}", result);
+        hr = m_SwapChain->GetBuffer(0, IID_PPV_ARGS(m_BackBuffer.GetAddressOf()));
+        if (FAILED(hr)) {
+            m_Logger->error("Failed to get back buffer");
             return;
         }
 
         Microsoft::WRL::ComPtr<ID3D11RenderTargetView> BackBufferRTV;
-        result = m_Device->CreateRenderTargetView(m_BackBuffer.Get(), nullptr, BackBufferRTV.GetAddressOf());
-        if (FAILED(result)) {
-            spdlog::error("Failed to create render target view: {}", result);
+        hr = m_Device->CreateRenderTargetView(m_BackBuffer.Get(), nullptr, BackBufferRTV.GetAddressOf());
+        if (FAILED(hr)) {
+            m_Logger->error("Failed to create render target view");
             return;
         }
 
@@ -158,9 +158,10 @@ public:
     };
 
     void SetGraphicsAdapter(int index) {
+        auto adapters = GetGraphicsAdapters();
         // Set the graphics adapter based on the index
-        if (index < 0 || index >= m_Adapters.size()) {
-            std::printf("Invalid graphics adapter index\n");
+        if (index < 0 || index >= adapters.size()) {
+            m_Logger->error("Invalid graphics adapter index: {}", index);
             return;
         }
         m_CurrentAdapter = index;
@@ -182,22 +183,25 @@ public:
     bool AddSpoutSource(const std::string& senderName) {
         // Check the ActiveReceivers
         if (m_ActiveReceivers.find(senderName) != m_ActiveReceivers.end()) {
-            std::printf("Sender already exists\n");
+            m_Logger->error("Sender already exists");
             return false;
         }
         
-        if (!m_SpoutSender.FindSenderName(senderName)) {
-            std::printf("Sender not found\n");
+        if (!m_SpoutSender.FindSenderName(senderName.c_str())) {
+            m_Logger->error("Sender not found");
             return false;
         }
         SpoutMeta_t meta;
-        if (!m_SpoutSender.GetSenderInfo(senderName.c_str(), meta.width, meta.height, meta.handle, meta.format)) {
-            spdlog::error("Failed to get sender info");
+        DWORD format = 0;
+        if (!m_SpoutSender.GetSenderInfo(senderName.c_str(), meta.width, meta.height, meta.handle, format)) {
+            m_Logger->error("Failed to get sender info");
             return false;
         }
 
+        meta.format = (DXGI_FORMAT)format;
+
         if (!meta.handle) {
-            std::printf("Sender handle is null\n");
+            m_Logger->error("Sender handle is null");
             return false;
         }
 
@@ -205,19 +209,19 @@ public:
 
 
         if(!m_SpoutDirectX.OpenDX11shareHandle(m_Device.Get(), texture.GetAddressOf(), meta.handle)) {
-            std::printf("Failed to open DX11 share handle\n");
+            m_Logger->error("Failed to open DX11 share handle");
             return false;
         }
 
         spoutFrameCount frameCount;
 
         if(frameCount.CreateAccessMutex(senderName.c_str())) {
-            std::printf("Failed to create access mutex\n");
+            m_Logger->error("Failed to create access mutex");
             return false;
         }
 
         if (!createStagingTexture(senderName, meta.width, meta.height, meta.format)) {
-            std::printf("Failed to create staging texture\n");
+            m_Logger->error("Failed to create staging texture");
             return false;
         }
         m_SpoutTextures[senderName] = texture;
@@ -227,25 +231,26 @@ public:
         return true;
     };
 
-    void ReconfigureSpoutSource(const std::string& senderName, int width, int height, DWORD format) {
+    bool ReconfigureSpoutSource(const std::string& senderName, int width, int height, DXGI_FORMAT format) {
         // Reconfigure the spout source
         //Check active receivers
         if (m_ActiveReceivers.find(senderName) == m_ActiveReceivers.end()) {
-            std::printf("Sender not found in active receivers\n");
-            return;
+            m_Logger->error("Sender not found in active receivers");
+            return false;
         }
         // Check if the sender is still active
-        if (!m_SpoutSender.FindSenderName(senderName)) {
-            std::printf("Sender not found\n");
-            return;
+        if (!m_SpoutSender.FindSenderName(senderName.c_str())) {
+            m_Logger->error("Sender not found");
+            return false;
         }
 
         auto texture = m_SpoutTextures[senderName];
         auto stagingTexture = m_StagingTextures[senderName];
         auto srv = m_SRVs[senderName];
+
         if (!texture || !stagingTexture || !srv) {
-            std::printf("Failed to get spout texture or staging texture\n");
-            return;
+            m_Logger->error("Failed to get spout texture or staging texture\n");
+            return false;
         }
         // Recreate the staging texture
         D3D11_TEXTURE2D_DESC desc;
@@ -263,15 +268,15 @@ public:
 
         HRESULT hr = m_Device->CreateTexture2D(&desc, nullptr, &stagingTexture);
         if (FAILED(hr)) {
-            std::printf("Failed to create staging texture\n");
-            return;
+            m_Logger->error("Failed to create staging texture");
+            return false;
         }
         // Create a shader resource view for the staging texture
-        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
+        //Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
         hr = m_Device->CreateShaderResourceView(stagingTexture.Get(), nullptr, srv.GetAddressOf());
         if (FAILED(hr)) {
-            std::printf("Failed to create shader resource view\n");
-            return;
+            m_Logger->error("Failed to create shader resource view");
+            return false;
         }
         // Update the staging texture and shader resource view
         m_StagingTextures[senderName] = stagingTexture;
@@ -285,15 +290,13 @@ public:
     void RemoveSpoutSource(const std::string& senderName) {
         // Remove the spout source
         if (m_ActiveReceivers.find(senderName) == m_ActiveReceivers.end()) {
-            std::printf("Sender not found in active receivers\n");
+            std::printf("Sender not found in active receivers");
             return;
         }
-        auto frame = m_SpoutFrameCounts[senderName];
-        if (frame) {
-            frame.CloseAccessMutex();
-            frame.DisableFrameCount();
-            frame.CleanupFrameCount();
-        }
+        auto &frame = m_SpoutFrameCounts.at(senderName);
+        frame.CloseAccessMutex();
+        frame.DisableFrameCount();
+        frame.CleanupFrameCount();
 
         m_SpoutMeta.erase(senderName);
         m_SpoutTextures.erase(senderName);
@@ -303,25 +306,25 @@ public:
         m_ActiveReceivers.erase(senderName);
     };
 
-    void ReadFrame(std::string& senderName) {
+    void ReadFrame(const std::string& senderName) {
         // Read the frame from the spout source
         if (m_ActiveReceivers.find(senderName) == m_ActiveReceivers.end()) {
-            std::printf("Sender not found in active receivers\n");
+            std::printf("Sender not found in active receivers");
             return;
         }
-        auto meta& = m_SpoutMeta[senderName];
+        auto& meta = m_SpoutMeta[senderName];
 
-        int width = 0;
-        int height = 0;
-        DWORD format = 0;
+        unsigned int width = 0;
+        unsigned int height = 0;
+        DWORD format;
 
         if (!m_SpoutSender.GetSenderInfo(senderName.c_str(), width, height, meta.handle, format)) {
-            std::printf("Failed to get sender info\n");
+            m_Logger->error("Failed to get sender info");
             return;
         }
         if (width != meta.width || height != meta.height || format != meta.format) {
-            std::printf("Sender info has changed\n");
-            ReconfigureSpoutSource(senderName, width, height, format);
+            m_Logger->error("Sender info has changed");
+            ReconfigureSpoutSource(senderName, width, height, (DXGI_FORMAT)format);
         }
 
         auto& frame = m_SpoutFrameCounts[senderName];
@@ -330,7 +333,7 @@ public:
 
         if (m_Device && frame.GetNewFrame()) {
             if (!texture || !stagingTexture || !m_Context) {
-                std::printf("Failed to get spout texture or staging texture\n");
+                m_Logger->error("Failed to get spout texture or staging texture");
                 return;
             }
             m_Context->CopyResource(stagingTexture.Get(), texture.Get());
@@ -342,7 +345,7 @@ public:
     Microsoft::WRL::ComPtr<ID3D11Texture2D> GetTexture(const std::string& senderName) {
         // Get the spout texture
         if (m_ActiveReceivers.find(senderName) == m_ActiveReceivers.end()) {
-            std::printf("Sender not found in active receivers\n");
+            m_Logger->error("Sender not found in active receivers");
             return nullptr;
         }
         return m_StagingTextures.at(senderName);
@@ -351,7 +354,7 @@ public:
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> GetShaderResourceView(const std::string& senderName) {
         // Get the shader resource view
         if (m_ActiveReceivers.find(senderName) == m_ActiveReceivers.end()) {
-            std::printf("Sender not found in active receivers\n");
+            m_Logger->error("Sender not found in active receivers");
             return nullptr;
         }
         return m_SRVs.at(senderName);
@@ -370,10 +373,10 @@ public:
 
     static std::vector<std::pair<std::string, int>> GetGraphicsAdapters() {
 
-        Microsoft::WRL::ComPtr::ComPtr<IDXGIFactory2> factory;
+        Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
         HRESULT hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
         if (FAILED(hr)) {
-            std::printf("Failed to create DXGIFactory\n");
+            std::printf("Failed to create DXGIFactory");
             return {};
         }
 
@@ -420,7 +423,7 @@ private:
         Microsoft::WRL::ComPtr<ID3D11Texture2D> stagingTexture;
         HRESULT hr = m_Device->CreateTexture2D(&desc, nullptr, &stagingTexture);
         if (FAILED(hr)) {
-            std::printf("Failed to create staging texture\n");
+            m_Logger->error("Failed to create staging texture\n");
             return false;
         }
 
@@ -431,7 +434,7 @@ private:
 
         hr = m_Device->CreateShaderResourceView(stagingTexture.Get(), nullptr, srv.GetAddressOf());
         if (FAILED(hr)) {
-            std::printf("Failed to create shader resource view\n");
+            m_Logger->error("Failed to create shader resource view");
             return false;
         }
 
@@ -440,9 +443,12 @@ private:
         return true;
     }
 
+    std::shared_ptr<spdlog::logger> m_Logger;
+
     int8_t m_CurrentAdapter = -1;
     std::string m_CurrentAdapterName;
     Microsoft::WRL::ComPtr<ID3D11Device> m_Device;
+    DXGI_ADAPTER_DESC1 m_AdapterDesc;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> m_Context;
     Microsoft::WRL::ComPtr<IDXGISwapChain> m_SwapChain;
     Microsoft::WRL::ComPtr<IDXGIKeyedMutex> m_KeyedMutex;
@@ -455,7 +461,7 @@ private:
     spoutDirectX m_SpoutDirectX;
     spoutSenderNames m_SpoutSender;
     std::unordered_map<std::string, spoutFrameCount> m_SpoutFrameCounts;
-    std::unordered_map<std::string, SpoutTexture_t> m_SpoutMeta;
+    std::unordered_map<std::string, SpoutMeta_t> m_SpoutMeta;
     std::set<std::string> m_ActiveReceivers;
 
 
@@ -464,4 +470,4 @@ private:
     std::unordered_map<std::string, Microsoft::WRL::ComPtr<ID3D11Texture2D>> m_StagingTextures;
     std::unordered_map<std::string, Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>> m_SRVs;
 
-}
+};

@@ -62,6 +62,33 @@ private:
     std::vector<const char*> m_textValues;
 };
 
+template <typename Char, typename Traits>
+std::basic_ostream<Char, Traits> & operator << (std::basic_ostream<Char, Traits> & out, const StreamDescriptions& streamDescriptions)
+{
+    out << "===== StreamDescriptions ====" << std::endl;
+    for (size_t i = 0; i < streamDescriptions.nStreams; ++i)
+    {
+        const StreamDescription& desc = streamDescriptions.streams[i];
+        out << "STREAM " << i << std::endl;
+        out << "Handle: " << desc.handle << std::endl;
+        out << "Channel: " << desc.channel << std::endl;
+        out << "mappingId: " << desc.mappingId << std::endl;
+        out << "iViewpoint: " << desc.iViewpoint << std::endl;
+        out << "name: " << desc.name << std::endl;
+        out << "width: " << desc.width << std::endl;
+        out << "height: " << desc.height << std::endl;
+        out << "format: " << desc.format << std::endl;
+        out << "clipping.bottom: " << desc.clipping.bottom << std::endl;
+        out << "clipping.top: " << desc.clipping.top << std::endl;
+        out << "clipping.left: " << desc.clipping.left << std::endl;
+        out << "clipping.right: " << desc.clipping.right << std::endl;
+        out << "mappingName: " << desc.mappingName << std::endl;
+        out << "iFragment: " << desc.iFragment << std::endl;
+        out << std::endl;
+    }
+    out << "=============================" << std::endl;
+    return out;
+}
 
 // RenderStream wrapper class to load and interact with disguise RenderStream.
 class RenderStream
@@ -83,7 +110,8 @@ public:
     inline void setSchema(Schema* schema);
 
     inline ParameterValues getFrameParameters(const RemoteParameters& scene);
-    inline void getFrameImage(int64_t imageId, SenderFrameType type, SenderFrameTypeData data);
+    
+    inline void getFrameImage(int64_t imageId, /*InOut*/const SenderFrame& data);
 
     inline std::variant<FrameData, RS_ERROR> awaitFrameData(int timeoutMs);
 
@@ -91,9 +119,13 @@ public:
 
     inline CameraData getFrameCamera(StreamHandle stream);
 
-    inline void sendFrame(StreamHandle stream, SenderFrameType type, SenderFrameTypeData data, const FrameResponseData* response);
+    inline void sendFrame(StreamHandle stream, const SenderFrame& frame, const FrameResponseData& response);
 
     inline void setNewStatusMessage(const char* message);
+
+    inline void setLoggingFunction(logger_t func);
+    inline void setErrorLoggingFunction(logger_t func);
+    inline void setVerboseLoggingFunction(logger_t func);
 
 private:
     friend class ParameterValues; // uses the various low level parameter accessors
@@ -101,6 +133,16 @@ private:
     std::vector<uint8_t> m_streamDescriptionsMemory;
     std::vector<uint8_t> m_schemaMemory;
 
+    logger_t m_loggingFunc = nullptr;
+    logger_t m_errorLoggingFunc = nullptr;
+    logger_t m_verboseLoggingFunc = nullptr;
+
+    DECL_FN(registerLoggingFunc);
+    DECL_FN(registerErrorLoggingFunc);
+    DECL_FN(registerVerboseLoggingFunc);
+    DECL_FN(unregisterLoggingFunc);
+    DECL_FN(unregisterErrorLoggingFunc);
+    DECL_FN(unregisterVerboseLoggingFunc);
     DECL_FN(initialise);
     DECL_FN(initialiseGpGpuWithDX11Device);
     DECL_FN(initialiseGpGpuWithDX11Resource);
@@ -114,10 +156,10 @@ private:
     DECL_FN(getFrameParameters);
     DECL_FN(getFrameImageData);
     DECL_FN(getFrameText);
-    DECL_FN(getFrameImage);
+    DECL_FN(getFrameImage2);
     DECL_FN(awaitFrameData);
     DECL_FN(getFrameCamera);
-    DECL_FN(sendFrame);
+    DECL_FN(sendFrame2);
     DECL_FN(setNewStatusMessage);
     DECL_FN(shutdown);
 };
@@ -163,6 +205,12 @@ void RenderStream::initialise()
         throw std::runtime_error(std::string("Failed to load dll: '") + buffer + "'");
     }
 
+    LOAD_FN(registerLoggingFunc);
+    LOAD_FN(registerErrorLoggingFunc);
+    LOAD_FN(registerVerboseLoggingFunc);
+    LOAD_FN(unregisterLoggingFunc);
+    LOAD_FN(unregisterErrorLoggingFunc);
+    LOAD_FN(unregisterVerboseLoggingFunc);
     LOAD_FN(initialise);
     LOAD_FN(initialiseGpGpuWithDX11Device);
     LOAD_FN(initialiseGpGpuWithDX11Resource);
@@ -175,13 +223,28 @@ void RenderStream::initialise()
     LOAD_FN(getFrameParameters);
     LOAD_FN(getFrameImageData);
     LOAD_FN(getFrameText);
-    LOAD_FN(getFrameImage);
+    LOAD_FN(getFrameImage2);
     LOAD_FN(getStreams);
     LOAD_FN(awaitFrameData);
     LOAD_FN(getFrameCamera);
-    LOAD_FN(sendFrame);
+    LOAD_FN(sendFrame2);
     LOAD_FN(setNewStatusMessage);
     LOAD_FN(shutdown);
+
+    if (m_loggingFunc)
+    {
+        m_registerLoggingFunc(m_loggingFunc);
+    }
+
+    if (m_errorLoggingFunc)
+    {
+        m_registerErrorLoggingFunc(m_errorLoggingFunc);
+    }
+
+    if (m_verboseLoggingFunc)
+    {
+        m_registerVerboseLoggingFunc(m_verboseLoggingFunc);
+    }
 
     checkRs(m_initialise(RENDER_STREAM_VERSION_MAJOR, RENDER_STREAM_VERSION_MINOR), "initialise");
 }
@@ -256,9 +319,9 @@ ParameterValues RenderStream::getFrameParameters(const RemoteParameters& scene)
     return ParameterValues(*this, scene);
 }
 
-void RenderStream::getFrameImage(int64_t imageId, SenderFrameType type, SenderFrameTypeData data)
+void RenderStream::getFrameImage(int64_t imageId, const SenderFrame& frame)
 {
-    checkRs(m_getFrameImage(imageId, type, data), __FUNCTION__);
+    checkRs(m_getFrameImage2(imageId, &frame), __FUNCTION__);
 }
 
 std::variant<FrameData, RS_ERROR> RenderStream::awaitFrameData(int timeoutMs)
@@ -307,14 +370,65 @@ CameraData RenderStream::getFrameCamera(StreamHandle stream)
     return out;
 }
 
-void RenderStream::sendFrame(StreamHandle stream, SenderFrameType frameType, SenderFrameTypeData frameData, const FrameResponseData* response)
+void RenderStream::sendFrame(StreamHandle stream, const SenderFrame& frame, const FrameResponseData& response)
 {
-    checkRs(m_sendFrame(stream, frameType, frameData, response), __FUNCTION__);
+    checkRs(m_sendFrame2(stream, &frame, &response), __FUNCTION__);
 }
 
 void RenderStream::setNewStatusMessage(const char* message)
 {
     checkRs(m_setNewStatusMessage(message), __FUNCTION__);
+}
+
+void RenderStream::setLoggingFunction(logger_t func) {
+    m_loggingFunc = func;
+    if (!m_rsDll)
+    {
+        return;
+    }
+
+    if (func)
+    {
+        m_registerLoggingFunc(m_loggingFunc);
+    }
+    else
+    {
+        m_unregisterLoggingFunc();
+    }
+}
+
+void RenderStream::setErrorLoggingFunction(logger_t func) {
+    m_errorLoggingFunc = func;
+    if (!m_rsDll)
+    {
+        return;
+    }
+
+    if (func)
+    {
+        m_registerErrorLoggingFunc(m_errorLoggingFunc);
+    }
+    else
+    {
+        m_unregisterErrorLoggingFunc();
+    }
+}
+
+void RenderStream::setVerboseLoggingFunction(logger_t func) {
+    m_verboseLoggingFunc = func;
+    if (!m_rsDll)
+    {
+        return;
+    }
+
+    if (func)
+    {
+        m_registerVerboseLoggingFunc(m_verboseLoggingFunc);
+    } 
+    else
+    {
+        m_unregisterVerboseLoggingFunc();
+    }
 }
 
 struct ScopedSchema
@@ -329,6 +443,10 @@ struct ScopedSchema
     }
     void reset()
     {
+        free(const_cast<char*>(schema.engineName));
+        free(const_cast<char*>(schema.engineVersion));
+        free(const_cast<char*>(schema.pluginVersion));
+        free(const_cast<char*>(schema.info));
         for (size_t i = 0; i < schema.channels.nChannels; ++i)
             free(const_cast<char*>(schema.channels.channels[i]));
         free(schema.channels.channels);
@@ -375,6 +493,10 @@ struct ScopedSchema
 private:
     void clear()
     {
+        schema.engineName = nullptr;
+        schema.engineVersion = nullptr;
+        schema.pluginVersion = nullptr;
+        schema.info = nullptr;
         schema.channels.nChannels = 0;
         schema.channels.channels = nullptr;
         schema.scenes.nScenes = 0;
