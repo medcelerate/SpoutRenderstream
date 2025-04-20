@@ -423,6 +423,17 @@ int main(int argc, char* argv[])
         }
     }
 
+    std::string pr = "Graphics Adapters:";
+    logger->info(pr.c_str());
+    RS_LOG(pr.c_str());
+    for (auto& g : adapters) {
+        std::string p = g.first + " : " + std::to_string(g.second);
+        logger->info(p);
+		RS_LOG(p.c_str());
+	}
+    
+
+
 
     std::unordered_map<StreamHandle, RenderTarget> renderTargets;
 

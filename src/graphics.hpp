@@ -338,8 +338,8 @@ public:
         auto& frame = m_SpoutFrameCounts[senderName];
         auto texture = m_SpoutTextures[senderName];
         auto stagingTexture = m_StagingTextures[senderName];
-
-        if (m_Device && frame.GetNewFrame()) {
+        //remive middle if broke
+        if (m_Device && frame.IsFrameNew() && frame.GetNewFrame()) {
             if (!texture || !stagingTexture || !m_Context) {
                 m_Logger->error("Failed to get spout texture or staging texture");
                 return;
