@@ -223,11 +223,6 @@ public:
             return false;
         }
 
-       // if(frameCount.CreateAccessMutex(senderName.c_str())) {
-       //     m_Logger->error("Failed to create access mutex for : {}", senderName);
-       //     return false;
-       // }
-
         if (!createStagingTexture(senderName, meta.width, meta.height, meta.format)) {
             m_Logger->error("Failed to create staging texture");
             return false;
@@ -242,7 +237,7 @@ public:
         return true;
     };
 
-    bool ReconfigureSpoutSource(const std::string& senderName, int width, int height, DXGI_FORMAT format) {
+    bool ReconfigureSpoutSource(const std::string& senderName) {
         // Reconfigure the spout source
         //Check active receivers
         if (m_ActiveReceivers.find(senderName) == m_ActiveReceivers.end()) {
@@ -265,13 +260,37 @@ public:
         }
         stagingTexture.Reset();
         srv.Reset();
-        // Recreate the staging texture
-        createStagingTexture(senderName, width, height, format);
+        texture.Reset();
 
-        m_SpoutMeta[senderName].width = width;
-        m_SpoutMeta[senderName].height = height;
-        m_SpoutMeta[senderName].format = format;
-        m_Logger->info("Reconfigured spout source: {} to {}x{}", senderName, width, height);
+        SpoutMeta_t meta;
+        DWORD fm = 0;
+
+        if (!m_SpoutSender.GetSenderInfo(senderName.c_str(), meta.width, meta.height, meta.handle, fm)) {
+            m_Logger->error("Failed to get sender info");
+            return false;
+        }
+
+        meta.format = (DXGI_FORMAT)fm;
+
+
+        if (!meta.handle) {
+            m_Logger->error("Sender handle is null");
+            return false;
+        }
+
+        if (!m_SpoutDirectX.OpenDX11shareHandle(m_Device.Get(), texture.GetAddressOf(), meta.handle)) {
+            m_Logger->error("Failed to open DX11 share handle");
+            return false;
+        }
+
+        // Recreate the staging texture
+        createStagingTexture(senderName, meta.width, meta.height, meta.format);
+
+        m_SpoutMeta[senderName] = std::move(meta);
+        m_SpoutTextures[senderName] = texture;
+
+
+        m_Logger->info("Reconfigured spout source: {} to {}x{}", senderName, meta.width, meta.height);
         return true;
     };
 
@@ -304,15 +323,16 @@ public:
 
         unsigned int width = 0;
         unsigned int height = 0;
+        HANDLE handle = 0;
         DWORD format;
 
-        if (!m_SpoutSender.GetSenderInfo(senderName.c_str(), width, height, meta.handle, format)) {
+        if (!m_SpoutSender.GetSenderInfo(senderName.c_str(), width, height, handle, format)) {
             m_Logger->error("Failed to get sender info");
             return;
         }
-        if (width != meta.width || height != meta.height || format != meta.format) {
+        if (width != meta.width || height != meta.height || format != meta.format || handle != meta.handle ) {
             m_Logger->error("Sender info has changed");
-            ReconfigureSpoutSource(senderName, width, height, (DXGI_FORMAT)format);
+            ReconfigureSpoutSource(senderName);
         }
 
         auto& frame = m_SpoutFrameCounts[senderName];

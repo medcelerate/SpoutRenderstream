@@ -162,6 +162,9 @@ bool GenerateDX11Texture(
     RSPixelFormat format
 )
 {
+    target.texture.Reset();
+    target.view.Reset();
+
     D3D11_TEXTURE2D_DESC desc;
     ZeroMemory(&desc, sizeof(desc));
     desc.Width = width;
