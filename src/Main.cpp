@@ -56,6 +56,8 @@ const Vertex vertices[] = {
     { { 1.0f, -1.0f, 0.0f}, {1.0f, 1.0f} },
 };
 
+const UINT indices[6] = { 0,1,2,0,2,3 };
+
 struct ConstantBuffer
 {
     float opacity;
@@ -214,12 +216,12 @@ void LogToD3(RenderStream& rs, std::string msg, int level)
 
 int main(int argc, char* argv[])
 {
-    while (!::IsDebuggerPresent())
-        ::Sleep(100);
+   // while (!::IsDebuggerPresent())
+    //    ::Sleep(100);
 
     //Configure spdlog file
 
-    auto logger = spdlog::basic_logger_mt("basic_logger", "SPRS.log");
+    auto logger = spdlog::basic_logger_mt("Spout Logger", "logs/SPRS.log");
 
   // Setup argpraeser
     argparse::ArgumentParser program("SpoutRS");
@@ -258,9 +260,9 @@ int main(int argc, char* argv[])
     }
 
     bool Windowed = program.get<bool>("--windowed");
-    bool RemoveSenders = program.get<bool>("--remove_sender_names");
-	bool EnableInput = program.get<bool>("--inputs");
-    bool DisableOutput = program.get<bool>("--disable_outputs");
+    bool RemoveSenders = program.get<bool>("--clearsenders");
+	bool EnableInput = program.get<bool>("--input");
+    bool DisableOutput = program.get<bool>("--no-output");
     int graphicsAdapter = program.get<int>("--graphics-adapter");
     int timeoutLimit = program.get<int>("--timeout-limit");
 
@@ -325,21 +327,35 @@ int main(int argc, char* argv[])
     }
 
     // Create vertex buffer
-    D3D11_BUFFER_DESC bufferDesc = {};
-    bufferDesc.Usage = D3D11_USAGE_DEFAULT;
-    bufferDesc.ByteWidth = sizeof(vertices);
-    bufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-    bufferDesc.CPUAccessFlags = 0;
+    D3D11_BUFFER_DESC vertexBufferDesc = {};
+    vertexBufferDesc.Usage = D3D11_USAGE_DEFAULT;
+    vertexBufferDesc.ByteWidth = sizeof(vertices);
+    vertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    vertexBufferDesc.CPUAccessFlags = 0;
 
-    D3D11_SUBRESOURCE_DATA initData = {};
-    initData.pSysMem = vertices;
+    D3D11_SUBRESOURCE_DATA initData = {vertices};
 
     Microsoft::WRL::ComPtr<ID3D11Buffer> vertexBuffer;
-    result = D3DDevice->CreateBuffer(&bufferDesc, &initData, vertexBuffer.GetAddressOf());
+    result = D3DDevice->CreateBuffer(&vertexBufferDesc, &initData, vertexBuffer.GetAddressOf());
     if (FAILED(result)) {
         logger->error("Failed to create vertex buffer");
         return 1;
     }
+
+    // Create index buffer
+    D3D11_BUFFER_DESC indexBufferDesc = {};
+    indexBufferDesc.Usage = D3D11_USAGE_DEFAULT;
+    indexBufferDesc.ByteWidth = sizeof(indices);
+    indexBufferDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+    indexBufferDesc.CPUAccessFlags = 0;
+    D3D11_SUBRESOURCE_DATA indexInitData = {indices};
+
+    Microsoft::WRL::ComPtr<ID3D11Buffer> indexBuffer;
+    result = D3DDevice->CreateBuffer(&indexBufferDesc, &indexInitData, indexBuffer.GetAddressOf());
+    if (FAILED(result)) {
+		logger->error("Failed to create index buffer");
+		return 1;
+	}
 
 
     // Create constant buffer
@@ -550,15 +566,17 @@ int main(int argc, char* argv[])
 
             D3DContext->OMSetRenderTargets(1, target.view.GetAddressOf(), nullptr);
 
-            const float clearColour[4] = { 0.f, 0.2f, 0.f, 0.f };
-            D3DContext->ClearRenderTargetView(target.view.Get(), clearColour);
+            const float clearColour[4] = { 1.f, 0.2f, 0.f, 0.f };
+           // D3DContext->ClearRenderTargetView(target.view.Get(), clearColour);
 
             // Set what the inputs to the shader are
             D3DContext->IASetInputLayout(inputLayout.Get());
+            D3DContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             UINT stride = sizeof(Vertex);
             UINT offset = 0;
             D3DContext->IASetVertexBuffers(0, 1, vertexBuffer.GetAddressOf(), &stride, &offset);
-            D3DContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+
+           // D3DContext->IASetIndexBuffer(indexBuffer.Get(), DXGI_FORMAT_R32_UINT, 0);
  
             // Set the shaders
             D3DContext->VSSetShader(vertexShader.Get(), nullptr, 0);
@@ -566,7 +584,7 @@ int main(int argc, char* argv[])
 
             D3DContext->PSSetShaderResources(0, 1, stagingSRV.GetAddressOf());
             D3DContext->PSSetSamplers(0, 1, samplerState.GetAddressOf());
-            D3DContext->Draw(4, 0);
+            D3DContext->Draw(6,0);
 
             SenderFrame data;
             data.type = RS_FRAMETYPE_DX11_TEXTURE;

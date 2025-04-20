@@ -186,11 +186,18 @@ public:
             m_Logger->error("Sender already exists");
             return false;
         }
+
+        //List senders
+        std::set<std::string> senders;
+        m_SpoutSender.GetSenderNames(&senders);
+
+        // Check if the sender name is valid
+        if (senders.find(senderName) == senders.end()) {
+			m_Logger->error("Sender not found: {}", senderName);
+			return false;
+		}
         
-        if (!m_SpoutSender.FindSenderName(senderName.c_str())) {
-            m_Logger->error("Sender not found");
-            return false;
-        }
+        
         SpoutMeta_t meta;
         DWORD format = 0;
         if (!m_SpoutSender.GetSenderInfo(senderName.c_str(), meta.width, meta.height, meta.handle, format)) {
@@ -208,10 +215,6 @@ public:
         Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
 
 
-        if(!m_SpoutDirectX.OpenDX11shareHandle(m_Device.Get(), texture.GetAddressOf(), meta.handle)) {
-            m_Logger->error("Failed to open DX11 share handle");
-            return false;
-        }
 
         spoutFrameCount frameCount;
 
@@ -224,6 +227,12 @@ public:
             m_Logger->error("Failed to create staging texture");
             return false;
         }
+
+        if (!m_SpoutDirectX.OpenDX11shareHandle(m_Device.Get(), texture.GetAddressOf(), meta.handle)) {
+            m_Logger->error("Failed to open DX11 share handle");
+            return false;
+        }
+
         m_SpoutTextures[senderName] = texture;
         m_SpoutFrameCounts[senderName] = frameCount;
         m_SpoutMeta[senderName] = meta;
@@ -235,7 +244,7 @@ public:
         // Reconfigure the spout source
         //Check active receivers
         if (m_ActiveReceivers.find(senderName) == m_ActiveReceivers.end()) {
-            m_Logger->error("Sender not found in active receivers");
+            m_Logger->error("Sender {} not found in active receivers", senderName);
             return false;
         }
         // Check if the sender is still active
@@ -261,7 +270,7 @@ public:
         desc.ArraySize = 1;
         desc.Format = format;
         desc.SampleDesc.Count = 1;
-        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.Usage = D3D11_USAGE_STAGING;
         desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
         desc.CPUAccessFlags = 0;
         desc.MiscFlags = 0;
@@ -284,6 +293,7 @@ public:
         m_SpoutMeta[senderName].width = width;
         m_SpoutMeta[senderName].height = height;
         m_SpoutMeta[senderName].format = format;
+        m_Logger->info("Reconfigured spout source: {} to {}x{} format: {}", senderName, width, height, format);
         return true;
     };
 
@@ -337,6 +347,7 @@ public:
                 return;
             }
             m_Context->CopyResource(stagingTexture.Get(), texture.Get());
+            
             return;
         }
 
@@ -430,9 +441,16 @@ private:
 
         // Create a shader resource view for the staging texture
 
+        D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc;
+        ZeroMemory(&srvDesc, sizeof(srvDesc));
+        srvDesc.Format = format;
+        srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Texture2D.MostDetailedMip = 0;
+        srvDesc.Texture2D.MipLevels = 1;
+
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
 
-        hr = m_Device->CreateShaderResourceView(stagingTexture.Get(), nullptr, srv.GetAddressOf());
+        hr = m_Device->CreateShaderResourceView(stagingTexture.Get(), &srvDesc, srv.GetAddressOf());
         if (FAILED(hr)) {
             m_Logger->error("Failed to create shader resource view");
             return false;
