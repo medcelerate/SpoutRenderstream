@@ -43,26 +43,13 @@ typedef struct RenderTarget {
 
 
 // Vertex structure
-struct Vertex {
-    float position[3];
-    float uv[2];
-};
-
-// Full-screen quad vertices
-const Vertex vertices[] = {
-    { {-1.0f,  1.0f, 0.0f}, {0.0f, 0.0f} },
-    { { 1.0f,  1.0f, 0.0f}, {1.0f, 0.0f} },
-    { {-1.0f, -1.0f, 0.0f}, {0.0f, 1.0f} },
-    { { 1.0f, -1.0f, 0.0f}, {1.0f, 1.0f} },
-};
-
-const UINT indices[6] = { 0,1,2,0,2,3 };
-
-struct ConstantBuffer
+struct Vertex { float x, y, z, u, v; };
+Vertex quad[] =
 {
-    float opacity;
-    float padding[3]; // Padding to align to 16 bytes
+    { -1,-1,0, 0,1 }, { -1, 1,0, 0,0 }, { 1, 1,0, 1,0 },
+    { -1,-1,0, 0,1 }, { 1, 1,0, 1,0 }, { 1,-1,0, 1,1 },
 };
+
 
 float randomFloat()
 {
@@ -87,39 +74,39 @@ DXGI_FORMAT toDxgiFormat(RSPixelFormat format)
 
 void GenerateRenderStreamSchema(
     std::set<std::string> &senders,
-    ScopedSchema& schema,
+    ScopedSchema& scoped,
     bool enableInput,
     bool enableOutput = true
 ) {
    
     //Change the below line to use a smart pointer
 
-    schema.schema.engineName = "SpoutRS";
-    schema.schema.engineVersion = "2.0.0";
-    schema.schema.info = "";
+    scoped.schema.engineName = "SpoutRS";
+    scoped.schema.engineVersion = _strdup(("RS" + std::to_string(RENDER_STREAM_VERSION_MAJOR) + "." + std::to_string(RENDER_STREAM_VERSION_MINOR)).c_str());
+    scoped.schema.pluginVersion = _strdup("3.0");
+    scoped.schema.info = "";
 
 
 
     if (enableOutput) {
-        schema.schema.scenes.nScenes = senders.size();
-        schema.schema.scenes.scenes = static_cast<RemoteParameters*>(
-            new RemoteParameters[schema.schema.scenes.nScenes]
-        );
+        scoped.schema.scenes.nScenes = senders.size();
+        scoped.schema.scenes.scenes = static_cast<RemoteParameters*>(malloc(sizeof(RemoteParameters) * scoped.schema.scenes.nScenes));
 
         int i = 0;
         for (auto &s: senders) {
-            RemoteParameters scene;
-            scene.name = s.c_str();
-            schema.schema.scenes.scenes[i] = scene;
+            RemoteParameters scene = {
+				_strdup(s.c_str()),
+				0,
+				nullptr,
+			};
+
             if (enableInput)
             {
-                schema.schema.scenes.scenes[i].nParameters = 1;
-                schema.schema.scenes.scenes[i].parameters = static_cast<RemoteParameter*>(
-                    new RemoteParameter[schema.schema.scenes.scenes[i].nParameters]
-                    );
+                scene.nParameters = 1;
+                scene.parameters = static_cast<RemoteParameter*>(malloc(sizeof(RemoteParameter) * 1));
 
-                RemoteParameterTypeDefaults defaults;
                 RemoteParameter par;
+                
                 par.group = "Input";
                 par.displayName = "SpoutInput";
                 par.key = "spout_input";
@@ -129,28 +116,27 @@ void GenerateRenderStreamSchema(
                 par.dmxOffset = -1;
                 par.dmxType = RS_DMX_16_BE;
                 par.flags = REMOTEPARAMETER_NO_FLAGS;
-                schema.schema.scenes.scenes[i].parameters[0] = par;
+                scene.parameters[0] = par;
+                scoped.schema.scenes.scenes[i] = scene;
             }
             else {
-                schema.schema.scenes.scenes[i].nParameters = 0;
-                schema.schema.scenes.scenes[i].parameters = nullptr;
+                scene.nParameters = 0;
+                scene.parameters = nullptr;
+                scoped.schema.scenes.scenes[i] = scene;
             }
             i++;
 		}
     } else {
-        schema.schema.scenes.nScenes = 1;
-        schema.schema.scenes.scenes = static_cast<RemoteParameters*>(
-            new RemoteParameters[schema.schema.scenes.nScenes]
-        );
-        RemoteParameters scene;
-        scene.name = "Default";
+        scoped.schema.scenes.nScenes = 1;
+        scoped.schema.scenes.scenes = static_cast<RemoteParameters*>(malloc(sizeof(RemoteParameters) * 1));
+        RemoteParameters scene = {
+               "Default",
+               0,
+               nullptr,
+        };
         scene.nParameters = 1;
+        scene.parameters = static_cast<RemoteParameter*>(malloc(sizeof(RemoteParameter) * 1));
 
-        schema.schema.scenes.scenes[0] = scene;
-        schema.schema.scenes.scenes[0].parameters = static_cast<RemoteParameter*>(
-            new RemoteParameter[schema.schema.scenes.scenes[0].nParameters]
-        );
-        RemoteParameterTypeDefaults defaults;
         RemoteParameter par;
         par.group = "Input";
         par.displayName = "SpoutInput";
@@ -161,7 +147,9 @@ void GenerateRenderStreamSchema(
         par.dmxOffset = -1;
         par.dmxType = RS_DMX_16_BE;
         par.flags = REMOTEPARAMETER_NO_FLAGS;
-        schema.schema.scenes.scenes[0].parameters[0] = par;
+        scene.parameters[0] = par;
+        scoped.schema.scenes.nScenes = 1;
+        scoped.schema.scenes.scenes[0] = scene;
     }
     
 }
@@ -209,19 +197,31 @@ bool GenerateDX11Texture(
 
 void LogToD3(RenderStream& rs, std::string msg, int level)
 {
-   
+    auto s = std::to_string(level) + ": " + msg;
+    RS_LOG(s.c_str());
+}
+
+std::string GetLaunchDirectory() {
+    char buffer[MAX_PATH];
+	GetModuleFileNameA(NULL, buffer, MAX_PATH);
+	std::string::size_type pos = std::string(buffer).find_last_of("\\/");
+	return std::string(buffer).substr(0, pos);
+
 }
 
 #undef main
 
 int main(int argc, char* argv[])
 {
-   // while (!::IsDebuggerPresent())
-    //    ::Sleep(100);
+    //while (!::IsDebuggerPresent())
+   //     ::Sleep(100);
+
 
     //Configure spdlog file
 
-    auto logger = spdlog::basic_logger_mt("Spout Logger", "logs/SPRS.log");
+    std::string logFile = GetLaunchDirectory() + "\\SPRS.log";
+
+    auto logger = spdlog::basic_logger_mt("Spout Logger", logFile);
 
   // Setup argpraeser
     argparse::ArgumentParser program("SpoutRS");
@@ -326,14 +326,30 @@ int main(int argc, char* argv[])
         return 1;
     }
 
+
+
+    // Input layout
+    D3D11_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+    };
+
+    // Create input layout
+    Microsoft::WRL::ComPtr<ID3D11InputLayout>  inputLayout;
+    result = D3DDevice->CreateInputLayout(layout, ARRAYSIZE(layout), v_main, sizeof(v_main), inputLayout.GetAddressOf());
+    if (FAILED(result)) {
+        logger->error("Failed to create input layout");
+        return 1;
+    }
+
     // Create vertex buffer
     D3D11_BUFFER_DESC vertexBufferDesc = {};
     vertexBufferDesc.Usage = D3D11_USAGE_DEFAULT;
-    vertexBufferDesc.ByteWidth = sizeof(vertices);
+    vertexBufferDesc.ByteWidth = sizeof(quad);
     vertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-    vertexBufferDesc.CPUAccessFlags = 0;
 
-    D3D11_SUBRESOURCE_DATA initData = {vertices};
+    D3D11_SUBRESOURCE_DATA initData = {};
+    initData.pSysMem = quad;
 
     Microsoft::WRL::ComPtr<ID3D11Buffer> vertexBuffer;
     result = D3DDevice->CreateBuffer(&vertexBufferDesc, &initData, vertexBuffer.GetAddressOf());
@@ -342,64 +358,24 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    // Create index buffer
-    D3D11_BUFFER_DESC indexBufferDesc = {};
-    indexBufferDesc.Usage = D3D11_USAGE_DEFAULT;
-    indexBufferDesc.ByteWidth = sizeof(indices);
-    indexBufferDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
-    indexBufferDesc.CPUAccessFlags = 0;
-    D3D11_SUBRESOURCE_DATA indexInitData = {indices};
-
-    Microsoft::WRL::ComPtr<ID3D11Buffer> indexBuffer;
-    result = D3DDevice->CreateBuffer(&indexBufferDesc, &indexInitData, indexBuffer.GetAddressOf());
-    if (FAILED(result)) {
-		logger->error("Failed to create index buffer");
-		return 1;
-	}
-
-
-    // Create constant buffer
-    Microsoft::WRL::ComPtr<ID3D11Buffer> constantBuffer;
-    D3D11_BUFFER_DESC cbDesc = {};
-    cbDesc.Usage = D3D11_USAGE_DEFAULT;
-    cbDesc.ByteWidth = sizeof(ConstantBuffer);
-    cbDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-    cbDesc.CPUAccessFlags = 0;
-    result = D3DDevice->CreateBuffer(&cbDesc, nullptr, constantBuffer.GetAddressOf());
-    if (FAILED(result)) {
-        logger->error("Failed to create constant buffer");
-        return 1;
-    }
-
-    // Input layout
-    D3D11_INPUT_ELEMENT_DESC layout[] = {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-    };
-
-    // Create input layout
-    Microsoft::WRL::ComPtr<ID3D11InputLayout> inputLayout;
-    result = D3DDevice->CreateInputLayout(layout, ARRAYSIZE(layout), v_main, sizeof(v_main), inputLayout.GetAddressOf());
-    if (FAILED(result)) {
-        logger->error("Failed to create input layout");
-        return 1;
-    }
-
-    D3D11_SAMPLER_DESC sampDesc = {};
-    sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-    sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
-    sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
-    sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
-    sampDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
-    sampDesc.MinLOD = 0;
-    sampDesc.MaxLOD = D3D11_FLOAT32_MAX;
+    //Create sampler
+    D3D11_SAMPLER_DESC samplerDesc = {};
+    samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samplerDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    samplerDesc.MinLOD = 0;
+    samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
 
     Microsoft::WRL::ComPtr<ID3D11SamplerState> samplerState;
-    result = D3DDevice->CreateSamplerState(&sampDesc, samplerState.GetAddressOf());
+    result = D3DDevice->CreateSamplerState(&samplerDesc, samplerState.GetAddressOf());
     if (FAILED(result)) {
-        logger->error("Failed to create sampler state");
-        return 1;
-    }
+		logger->error("Failed to create sampler state");
+		return 1;
+	}
+	
+
 
 
     if (Windowed) {
@@ -459,6 +435,7 @@ int main(int argc, char* argv[])
             int nSenders_u = Graphics.GetSpoutSenderCount();
             if (nSenders_u != nSenders) {
                     nSenders = nSenders_u;
+                    LogToD3(rs, "Found " + std::to_string(nSenders), 0);
                     logger->info("Found {} Spout Senders", nSenders);
                     std::set<std::string> senders = Graphics.GetSpoutSenders();
                     GenerateRenderStreamSchema(senders, schema, EnableInput);
@@ -482,7 +459,7 @@ int main(int argc, char* argv[])
                     const StreamDescription& description = Descriptions->streams[i];
                     RenderTarget& target = renderTargets[description.handle];
                     GenerateDX11Texture(Graphics.GetDevice(), target, description.width, description.height, description.format);
-                    Graphics.AddSpoutSource(description.channel);
+                   // Graphics.AddSpoutSource(description.channel);
                 }
 
                 logger->info("Found {} Streams", Descriptions->nStreams);
@@ -506,12 +483,18 @@ int main(int argc, char* argv[])
         const size_t numStreams = Descriptions ? Descriptions->nStreams : 0;
         if (frameData.scene >= schema.schema.scenes.nScenes)
         {
-            std::printf("Scene out of bounds\n");
+            logger->error("Scene out of bounds: {}", frameData.scene);
             //   PNL("Scene out of bounds");
             continue;
         }
 
+       // LogToD3(rs, "Scene: " + std::to_string(frameData.scene), 0);
+      //  LogToD3(rs, "Frame: " + std::string(schema.schema.scenes.scenes[frameData.scene].name), 0);
+
         std::string sceneName = schema.schema.scenes.scenes[frameData.scene].name;
+
+      // logger->info("Scene: {}", sceneName);
+
 
         if (!DisableOutput) {
             Graphics.AddSpoutSource(sceneName);
@@ -545,7 +528,7 @@ int main(int argc, char* argv[])
 
             //Check if the description channel matches a spout channel
 
-            
+           /*
             auto stagingTexture = Graphics.GetTexture(description.channel);
             auto stagingSRV = Graphics.GetShaderResourceView(description.channel);
             if (stagingTexture && stagingSRV) {
@@ -557,6 +540,9 @@ int main(int argc, char* argv[])
                 stagingSRV = Graphics.GetShaderResourceView(sceneName);
             }
 
+            */
+            auto stagingTexture = Graphics.GetTexture(sceneName);
+            auto stagingSRV = Graphics.GetShaderResourceView(sceneName);
 
             if (!D3DContext) {
                 logger->error("Failed to get context");
@@ -566,25 +552,44 @@ int main(int argc, char* argv[])
 
             D3DContext->OMSetRenderTargets(1, target.view.GetAddressOf(), nullptr);
 
-            const float clearColour[4] = { 1.f, 0.2f, 0.f, 0.f };
-           // D3DContext->ClearRenderTargetView(target.view.Get(), clearColour);
+            const float clearColour[4] = { 0.f, 0.8f, 0.f, 0.f };
+            D3DContext->ClearRenderTargetView(target.view.Get(), clearColour);
+
+            D3D11_VIEWPORT viewport;
+            ZeroMemory(&viewport, sizeof(D3D11_VIEWPORT));
+            viewport.Width = static_cast<float>(description.width);
+            viewport.Height = static_cast<float>(description.height);
+            viewport.MinDepth = 0;
+            viewport.MaxDepth = 1;
+            D3DContext->RSSetViewports(1, &viewport);
+
 
             // Set what the inputs to the shader are
-            D3DContext->IASetInputLayout(inputLayout.Get());
-            D3DContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
             UINT stride = sizeof(Vertex);
             UINT offset = 0;
+            D3DContext->IASetInputLayout(inputLayout.Get());
+            D3DContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             D3DContext->IASetVertexBuffers(0, 1, vertexBuffer.GetAddressOf(), &stride, &offset);
+
 
            // D3DContext->IASetIndexBuffer(indexBuffer.Get(), DXGI_FORMAT_R32_UINT, 0);
  
             // Set the shaders
             D3DContext->VSSetShader(vertexShader.Get(), nullptr, 0);
+
+            D3DContext->PSSetSamplers(0, 1, samplerState.GetAddressOf());
+            D3DContext->PSSetShaderResources(0, 1, stagingSRV.GetAddressOf());
+
             D3DContext->PSSetShader(pixelShader.Get(), nullptr, 0);
 
-            D3DContext->PSSetShaderResources(0, 1, stagingSRV.GetAddressOf());
-            D3DContext->PSSetSamplers(0, 1, samplerState.GetAddressOf());
+
+
+           // D3DContext->PSSetShaderResources(0, 1, stagingSRV.GetAddressOf());
             D3DContext->Draw(6,0);
+
+            //Check for errors
+
 
             SenderFrame data;
             data.type = RS_FRAMETYPE_DX11_TEXTURE;
