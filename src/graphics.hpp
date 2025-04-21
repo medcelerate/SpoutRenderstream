@@ -77,7 +77,7 @@ public:
                 m_Context.GetAddressOf()
             );
             if (FAILED(hr)) {
-                m_Logger->error("Failed to create D3D11 device\n");
+                m_Logger->error("Failed to create D3D11 device");
                 return;
             }
 

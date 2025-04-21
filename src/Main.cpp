@@ -76,6 +76,7 @@ void GenerateRenderStreamSchema(
     std::set<std::string> &senders,
     ScopedSchema& scoped,
     bool enableInput,
+    bool storeChannels = false,
     bool enableOutput = true
 ) {
    
@@ -93,7 +94,7 @@ void GenerateRenderStreamSchema(
         scoped.schema.scenes.scenes = static_cast<RemoteParameters*>(malloc(sizeof(RemoteParameters) * scoped.schema.scenes.nScenes));
 
         int i = 0;
-        for (auto &s: senders) {
+        for (const auto &s: senders) {
             RemoteParameters scene = {
 				_strdup(s.c_str()),
 				0,
@@ -126,6 +127,17 @@ void GenerateRenderStreamSchema(
             }
             i++;
 		}
+        if (storeChannels) {
+            scoped.schema.channels.nChannels = senders.size();
+            std::vector<const char*> ptrs;
+            ptrs.reserve(senders.size() + 1);
+            scoped.schema.channels.channels = static_cast<const char**>(malloc(sizeof(const char*) * scoped.schema.channels.nChannels));
+            int j = 0;
+            for (const auto &s : senders) {
+                ptrs.push_back(s.c_str());
+			}
+            scoped.schema.channels.channels = std::move(ptrs.data());
+        }
     } else {
         scoped.schema.scenes.nScenes = 1;
         scoped.schema.scenes.scenes = static_cast<RemoteParameters*>(malloc(sizeof(RemoteParameters) * 1));
@@ -151,6 +163,8 @@ void GenerateRenderStreamSchema(
         scoped.schema.scenes.nScenes = 1;
         scoped.schema.scenes.scenes[0] = scene;
     }
+
+
     
 }
 
@@ -249,6 +263,10 @@ int main(int argc, char* argv[])
         .default_value(-1)
         .action([](const std::string& value) { return std::stoi(value); });
 
+    program.add_argument("--store-channels").help("Save the spout senders as channels")
+        .default_value(false)
+		.implicit_value(true);
+
     program.add_argument("--timeout-limit").help("Sets the timeout limit for the receiver.")
         .default_value(5000)
         .action([](const std::string& value) { return std::stoi(value); });
@@ -267,6 +285,7 @@ int main(int argc, char* argv[])
 	bool EnableInput = program.get<bool>("--input");
     bool DisableOutput = program.get<bool>("--no-output");
     int graphicsAdapter = program.get<int>("--graphics-adapter");
+    bool StoreChannels = program.get<bool>("--store-channels");
     int timeoutLimit = program.get<int>("--timeout-limit");
 
 
@@ -452,7 +471,7 @@ int main(int argc, char* argv[])
                     LogToD3(rs, "Found " + std::to_string(nSenders), 0);
                     logger->info("Found {} Spout Senders", nSenders);
                     std::set<std::string> senders = Graphics.GetSpoutSenders();
-                    GenerateRenderStreamSchema(senders, schema, EnableInput);
+                    GenerateRenderStreamSchema(senders, schema, EnableInput, StoreChannels);
                     rs.setSchema(&schema.schema);
                     rs.saveSchema(argv[0], &schema.schema);
             }
@@ -542,7 +561,8 @@ int main(int argc, char* argv[])
 
             //Check if the description channel matches a spout channel
 
-           /*
+            Graphics.AddSpoutSource(description.channel);
+
             auto stagingTexture = Graphics.GetTexture(description.channel);
             auto stagingSRV = Graphics.GetShaderResourceView(description.channel);
             if (stagingTexture && stagingSRV) {
@@ -554,9 +574,9 @@ int main(int argc, char* argv[])
                 stagingSRV = Graphics.GetShaderResourceView(sceneName);
             }
 
-            */
-            auto stagingTexture = Graphics.GetTexture(sceneName);
-            auto stagingSRV = Graphics.GetShaderResourceView(sceneName);
+            
+            //auto stagingTexture = Graphics.GetTexture(sceneName);
+           //auto stagingSRV = Graphics.GetShaderResourceView(sceneName);
 
             if (!D3DContext) {
                 logger->error("Failed to get context");
