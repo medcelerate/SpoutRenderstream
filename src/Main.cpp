@@ -240,15 +240,6 @@ std::optional<Texture> createTexture(Microsoft::WRL::ComPtr<ID3D11Device> device
     if (FAILED(device->CreateTexture2D(&rtDesc, nullptr, texture.resource.GetAddressOf())))
         return std::nullopt;
 
-    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc;
-    ZeroMemory(&srvDesc, sizeof(D3D11_SHADER_RESOURCE_VIEW_DESC));
-    srvDesc.Format = rtDesc.Format;
-    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-    srvDesc.Texture2D.MostDetailedMip = 0;
-    srvDesc.Texture2D.MipLevels = rtDesc.MipLevels;
-    if (FAILED(device->CreateShaderResourceView(texture.resource.Get(), &srvDesc, texture.srv.GetAddressOf())))
-        return std::nullopt;
-
     return texture;
 }
 
@@ -591,10 +582,8 @@ int main(int argc, char* argv[])
 					continue;
 				}
                 if (SpoutInit) {
-                    if (SpoutTexture) {
-                        SpoutTexture->Release();
-                    }
-                    SpoutDX.CreateSharedDX11Texture(Graphics.GetDevice().Get(), image.height, image.width, toDxgiFormat(image.format), SpoutTexture.GetAddressOf(), SpoutSharedHandle);
+                    SpoutTexture.Reset();
+                    SpoutDX.CreateSharedDX11Texture(Graphics.GetDevice().Get(), image.width, image.height, toDxgiFormat(image.format), SpoutTexture.GetAddressOf(), SpoutSharedHandle);
                     SpoutSender.UpdateSender("Disguise", image.width, image.height, SpoutSharedHandle);
                 }
 			}
@@ -603,13 +592,15 @@ int main(int argc, char* argv[])
             data.dx11.resource = InputTexture.resource.Get();
             rs.getFrameImage(image.imageId, data);
             if (!SpoutInit) {
-                SpoutDX.CreateSharedDX11Texture(Graphics.GetDevice().Get(), image.height, image.width, toDxgiFormat(image.format), SpoutTexture.GetAddressOf(), SpoutSharedHandle);
-                SpoutInit = SpoutSender.CreateSender("Disguise", image.width, image.height, SpoutSharedHandle);
-                SpoutFrame.CreateAccessMutex("Disguise");
+                SpoutDX.CreateSharedDX11Texture(Graphics.GetDevice().Get(), image.width, image.height, toDxgiFormat(image.format), SpoutTexture.GetAddressOf(), SpoutSharedHandle);
+                SpoutInit = SpoutSender.CreateSender("Disguise", image.width, image.height, SpoutSharedHandle, (DWORD)toDxgiFormat(image.format));
+                
+               // SpoutFrame.CreateAccessMutex("Disguise");
                 SpoutFrame.EnableFrameCount("Disguise");
             }
             if (SpoutFrame.CheckAccess()) {
-                D3DContext->CopyResource(InputTexture.resource.Get(), SpoutTexture.Get());
+                D3DContext->CopyResource(SpoutTexture.Get(), InputTexture.resource.Get());
+                D3DContext->Flush();
                 SpoutFrame.SetNewFrame();
                 SpoutFrame.AllowAccess();
             }
