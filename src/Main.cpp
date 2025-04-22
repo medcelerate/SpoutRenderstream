@@ -211,6 +211,47 @@ bool GenerateDX11Texture(
 
 }
 
+struct Texture
+{
+    uint32_t width = 0;
+    uint32_t height = 0;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> resource;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
+};
+
+std::optional<Texture> createTexture(Microsoft::WRL::ComPtr<ID3D11Device> device, ImageFrameData image)
+{
+    Texture texture;
+    texture.width = image.width;
+    texture.height = image.height;
+
+    D3D11_TEXTURE2D_DESC rtDesc;
+    ZeroMemory(&rtDesc, sizeof(D3D11_TEXTURE2D_DESC));
+    rtDesc.Width = texture.width;
+    rtDesc.Height = texture.height;
+    rtDesc.MipLevels = 1;
+    rtDesc.ArraySize = 1;
+    rtDesc.Format = toDxgiFormat(image.format);
+    rtDesc.SampleDesc.Count = 1;
+    rtDesc.Usage = D3D11_USAGE_DEFAULT;
+    rtDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    rtDesc.CPUAccessFlags = 0;
+    rtDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+    if (FAILED(device->CreateTexture2D(&rtDesc, nullptr, texture.resource.GetAddressOf())))
+        return std::nullopt;
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc;
+    ZeroMemory(&srvDesc, sizeof(D3D11_SHADER_RESOURCE_VIEW_DESC));
+    srvDesc.Format = rtDesc.Format;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MostDetailedMip = 0;
+    srvDesc.Texture2D.MipLevels = rtDesc.MipLevels;
+    if (FAILED(device->CreateShaderResourceView(texture.resource.Get(), &srvDesc, texture.srv.GetAddressOf())))
+        return std::nullopt;
+
+    return texture;
+}
+
 
 void LogToD3(RenderStream& rs, std::string msg, int level)
 {
@@ -451,6 +492,14 @@ int main(int argc, char* argv[])
 		RS_LOG(p.c_str());
 	}
     
+    //Move this into graphics
+    Texture InputTexture;
+    spoutDirectX SpoutDX;
+    spoutSenderNames SpoutSender;
+    spoutFrameCount SpoutFrame;
+    bool SpoutInit = false;
+    HANDLE SpoutSharedHandle = nullptr;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> SpoutTexture;
 
 
 
@@ -527,6 +576,44 @@ int main(int argc, char* argv[])
         std::string sceneName = schema.schema.scenes.scenes[frameData.scene].name;
 
       // logger->info("Scene: {}", sceneName);
+
+        if (EnableInput) {
+            const auto& scene = schema.schema.scenes.scenes[frameData.scene];
+            ParameterValues values = rs.getFrameParameters(scene);
+            ImageFrameData image = values.get<ImageFrameData>("spout_input");
+            if (image.height != InputTexture.height || image.width != InputTexture.width) {
+				auto tex = createTexture(D3DDevice, image);
+                if (tex) {
+					InputTexture = tex.value();
+				}
+				else {
+					logger->error("Failed to create texture");
+					continue;
+				}
+                if (SpoutInit) {
+                    if (SpoutTexture) {
+                        SpoutTexture->Release();
+                    }
+                    SpoutDX.CreateSharedDX11Texture(Graphics.GetDevice().Get(), image.height, image.width, toDxgiFormat(image.format), SpoutTexture.GetAddressOf(), SpoutSharedHandle);
+                    SpoutSender.UpdateSender("Disguise", image.width, image.height, SpoutSharedHandle);
+                }
+			}
+            SenderFrame data;
+            data.type = RS_FRAMETYPE_DX11_TEXTURE;
+            data.dx11.resource = InputTexture.resource.Get();
+            rs.getFrameImage(image.imageId, data);
+            if (!SpoutInit) {
+                SpoutDX.CreateSharedDX11Texture(Graphics.GetDevice().Get(), image.height, image.width, toDxgiFormat(image.format), SpoutTexture.GetAddressOf(), SpoutSharedHandle);
+                SpoutInit = SpoutSender.CreateSender("Disguise", image.width, image.height, SpoutSharedHandle);
+                SpoutFrame.CreateAccessMutex("Disguise");
+                SpoutFrame.EnableFrameCount("Disguise");
+            }
+            if (SpoutFrame.CheckAccess()) {
+                D3DContext->CopyResource(InputTexture.resource.Get(), SpoutTexture.Get());
+                SpoutFrame.SetNewFrame();
+                SpoutFrame.AllowAccess();
+            }
+        }
 
 
         if (!DisableOutput) {
