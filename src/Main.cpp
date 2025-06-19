@@ -1,31 +1,29 @@
-#include <gl/glew.h>
-#include <GLFW/glfw3.h>
-
-#define GLFW_EXPOSE_NATIVE_WIN32
-#define GLFW_EXPOSE_NATIVE_WGL
 
 #define NOMINMAX
 
-#include <GLFW/glfw3native.h>
 #include <cstdio>
 #include <memory>
 #include <vector>
+#include <wrl/client.h>
+#include <d3d11.h>
+#include <dxgi.h>
+#include <argparse/argparse.hpp>
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_syswm.h>
+#include <spdlog/sinks/basic_file_sink-inl.h>
 
 #include "../SpoutGL/SpoutReceiver.h"
 #include "../SpoutGL/SpoutSender.h"
-#include "../includes/renderstream.hpp"
-#include "argparse.hpp"
+#include "graphics.hpp"
+#include "renderstream.hpp"
+#include "PixelShader.h"
+#include "VertexShader.h"
 
-// TODO
-// Add cli args for stream name and window size
-// Add a way to get the stream name from the sender
-// Add a scoped schema for renderstream
+#pragma comment(lib, "Shlwapi.lib")
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "d3dcompiler.lib")
 
-typedef struct RenderTarget
-{
-    GLuint texture;
-    GLuint frameBuffer;
-} RenderTarget;
+
 
 
 struct free_delete
@@ -33,61 +31,24 @@ struct free_delete
     void operator()(void* x) { free(x); }
 };
 
-GLint toGlInternalFormat(RSPixelFormat format)
-{
-    switch (format)
-    {
-    case RS_FMT_BGRA8:
-    case RS_FMT_BGRX8:
-        return GL_RGBA8;
-    case RS_FMT_RGBA32F:
-        return GL_RGBA32F;
-    case RS_FMT_RGBA16:
-        return GL_RGBA16;
-    case RS_FMT_RGBA8:
-    case RS_FMT_RGBX8:
-        return GL_RGBA8;
-    default:
-        throw std::runtime_error("Unhandled RS pixel format");
-    }
-}
+typedef struct WindowFormat {
+    uint32_t width;
+    uint32_t height;
+} WindowFormat_t;
 
-GLint toGlFormat(RSPixelFormat format)
-{
-    switch (format)
-    {
-    case RS_FMT_BGRA8:
-    case RS_FMT_BGRX8:
-        return GL_BGRA;
-    case RS_FMT_RGBA32F:
-    case RS_FMT_RGBA16:
-    case RS_FMT_RGBA8:
-    case RS_FMT_RGBX8:
-        return GL_RGBA;
-    default:
-        throw std::runtime_error("Unhandled RS pixel format");
-    }
-}
+typedef struct RenderTarget {
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> view;
+} RenderTarget_t;
 
-GLenum toGlType(RSPixelFormat format)
-{
-    switch (format)
-    {
-    case RS_FMT_BGRA8:
-    case RS_FMT_BGRX8:
-        return GL_UNSIGNED_BYTE;
-    case RS_FMT_RGBA32F:
-        return GL_FLOAT;
-    case RS_FMT_RGBA16:
-        return GL_UNSIGNED_SHORT;
-    case RS_FMT_RGBA8:
-    case RS_FMT_RGBX8:
-        return GL_UNSIGNED_BYTE;
-    default:
-        throw std::runtime_error("Unhandled RS pixel format");
-    }
-}
 
+// Vertex structure
+struct Vertex { float x, y, z, u, v; };
+Vertex quad[] =
+{
+    { -1,-1,0, 0,1 }, { -1, 1,0, 0,0 }, { 1, 1,0, 1,0 },
+    { -1,-1,0, 0,1 }, { 1, 1,0, 1,0 }, { 1,-1,0, 1,1 },
+};
 
 
 float randomFloat()
@@ -95,51 +56,102 @@ float randomFloat()
     return (float)(rand()) / (float)(RAND_MAX);
 }
 
-std::vector<std::string> getSpoutSenders(SpoutReceiver& sRecv) {
-    int c = sRecv.GetSenderCount();
-    std::vector<std::string> senders;
-    for (int i = 0; i < c; i++) {
-        char name[256];
-        sRecv.GetSender(i, name);
-        senders.push_back(std::string(name));
-      //  delete name;
+DXGI_FORMAT toDxgiFormat(RSPixelFormat format)
+{
+    switch (format)
+    {
+    case RS_FMT_BGRA8:
+    case RS_FMT_BGRX8:
+        return DXGI_FORMAT_B8G8R8A8_UNORM;
+    case RS_FMT_RGBA32F:
+        return DXGI_FORMAT_R32G32B32A32_FLOAT;
+    case RS_FMT_RGBA16:
+        return DXGI_FORMAT_R16G16B16A16_UNORM;
+    default:
+        throw std::runtime_error("Unhandled RS pixel format");
     }
-    return senders;
 }
 
-
-void generateSchema(std::vector<std::string> &senders, ScopedSchema& schema, bool genInputs, bool genOutputs = true) {
+void GenerateRenderStreamSchema(
+    std::set<std::string> &senders,
+    ScopedSchema& scoped,
+    bool enableInput,
+    bool storeChannels = false,
+    bool enableOutput = true
+) {
    
     //Change the below line to use a smart pointer
 
-    schema.schema.engineName = "SpoutRenderStream";
-    schema.schema.engineVersion = "1.30";
-    schema.schema.info = "";
+    scoped.schema.engineName = "SpoutRS";
+    scoped.schema.engineVersion = _strdup(("RS" + std::to_string(RENDER_STREAM_VERSION_MAJOR) + "." + std::to_string(RENDER_STREAM_VERSION_MINOR)).c_str());
+    scoped.schema.pluginVersion = _strdup("3.0");
+    scoped.schema.info = "";
 
 
-    
-    if (!genOutputs) {
-        schema.schema.scenes.nScenes = 1;
-        schema.schema.scenes.scenes = static_cast<RemoteParameters*>(
-            malloc(
-                schema.schema.scenes.nScenes * sizeof(RemoteParameters)
-            )
-            );
-        RemoteParameters rp = {
-            "Default",
-            1,
-            nullptr,
+
+    if (enableOutput) {
+        scoped.schema.scenes.nScenes = senders.size();
+        scoped.schema.scenes.scenes = static_cast<RemoteParameters*>(malloc(sizeof(RemoteParameters) * scoped.schema.scenes.nScenes));
+
+        int i = 0;
+        for (const auto &s: senders) {
+            RemoteParameters scene = {
+				_strdup(s.c_str()),
+				0,
+				nullptr,
+			};
+
+            if (enableInput)
+            {
+                scene.nParameters = 1;
+                scene.parameters = static_cast<RemoteParameter*>(malloc(sizeof(RemoteParameter) * 1));
+
+                RemoteParameter par;
+                
+                par.group = "Input";
+                par.displayName = "SpoutInput";
+                par.key = "spout_input";
+                par.type = RS_PARAMETER_IMAGE;
+                par.nOptions = 0;
+                par.options = nullptr;
+                par.dmxOffset = -1;
+                par.dmxType = RS_DMX_16_BE;
+                par.flags = REMOTEPARAMETER_NO_FLAGS;
+                scene.parameters[0] = par;
+                scoped.schema.scenes.scenes[i] = scene;
+            }
+            else {
+                scene.nParameters = 0;
+                scene.parameters = nullptr;
+                scoped.schema.scenes.scenes[i] = scene;
+            }
+            i++;
+		}
+        if (storeChannels) {
+            scoped.schema.channels.nChannels = senders.size();
+            std::vector<const char*> ptrs;
+            ptrs.reserve(senders.size() + 1);
+            scoped.schema.channels.channels = static_cast<const char**>(malloc(sizeof(const char*) * scoped.schema.channels.nChannels));
+            int j = 0;
+            for (const auto &s : senders) {
+                ptrs.push_back(s.c_str());
+			}
+            scoped.schema.channels.channels = std::move(ptrs.data());
+        }
+    } else {
+        scoped.schema.scenes.nScenes = 1;
+        scoped.schema.scenes.scenes = static_cast<RemoteParameters*>(malloc(sizeof(RemoteParameters) * 1));
+        RemoteParameters scene = {
+               "Default",
+               0,
+               nullptr,
         };
-        schema.schema.scenes.scenes[0] = rp;
-        schema.schema.scenes.scenes[0].parameters = static_cast<RemoteParameter*>(
-            malloc(
-                schema.schema.scenes.scenes[0].nParameters * sizeof(RemoteParameter)
-            )
-        );
-        RemoteParameterTypeDefaults defaults;
+        scene.nParameters = 1;
+        scene.parameters = static_cast<RemoteParameter*>(malloc(sizeof(RemoteParameter) * 1));
+
         RemoteParameter par;
         par.group = "Input";
-        par.displayName = "SpoutSource";
+        par.displayName = "SpoutInput";
         par.key = "spout_input";
         par.type = RS_PARAMETER_IMAGE;
         par.nOptions = 0;
@@ -147,232 +159,282 @@ void generateSchema(std::vector<std::string> &senders, ScopedSchema& schema, boo
         par.dmxOffset = -1;
         par.dmxType = RS_DMX_16_BE;
         par.flags = REMOTEPARAMETER_NO_FLAGS;
-        schema.schema.scenes.scenes[0].parameters[0] = par;
-        return;
+        scene.parameters[0] = par;
+        scoped.schema.scenes.nScenes = 1;
+        scoped.schema.scenes.scenes[0] = scene;
     }
 
-    schema.schema.scenes.nScenes = senders.size();
-    schema.schema.scenes.scenes = static_cast<RemoteParameters*>(
-        malloc(
-            schema.schema.scenes.nScenes * sizeof(RemoteParameters)
-        )
-    );
 
-    for (int i = 0; i < schema.schema.scenes.nScenes; i++) {
-        RemoteParameters rp = {
-            senders[i].c_str(),
-            0,
-            nullptr,
-        };
-        schema.schema.scenes.scenes[i] = rp;
-
-        if (genInputs)
-        {
-            schema.schema.scenes.scenes[i].nParameters = 1;
-            schema.schema.scenes.scenes[i].parameters = static_cast<RemoteParameter*>(
-                malloc(
-                    schema.schema.scenes.scenes[i].nParameters * sizeof(RemoteParameter)
-                )
-            );
-
-            //std::shared_ptr<RemoteParameter> param (static_cast<RemoteParameter*>(malloc(schema.schema.scenes.scenes[i].nParameters * sizeof(RemoteParameter))), free_delete());
-
-           // schema.schema.scenes.scenes[i].parameters = std::move(param.get());
-
-            RemoteParameterTypeDefaults defaults;
-            RemoteParameter par;
-            par.group = "Input";
-            par.displayName = "SpoutSource";
-            par.key = "spout_input";
-            par.type = RS_PARAMETER_IMAGE;
-            par.nOptions = 0;
-            par.options = nullptr;
-            par.dmxOffset = -1;
-            par.dmxType = RS_DMX_16_BE;
-            par.flags = REMOTEPARAMETER_NO_FLAGS;
-            schema.schema.scenes.scenes[i].parameters[0] = par;
-        }
-    };
+    
 }
 
+bool GenerateDX11Texture(
+    Microsoft::WRL::ComPtr<ID3D11Device> device,
+    RenderTarget& target,
+    int width,
+    int height,
+    RSPixelFormat format
+)
+{
+    target.texture.Reset();
+    target.view.Reset();
 
-void generateGlTexture(RenderTarget& target, const int width, const int height, RSPixelFormat format) {
-    //Generate opengl texture and frame buffer
-    glGenTextures(1, &target.texture);
-    if (glGetError() != GL_NO_ERROR)
-        throw std::runtime_error("Failed to generate render target texture for stream");
-
-    glBindTexture(GL_TEXTURE_2D, target.texture);
+    D3D11_TEXTURE2D_DESC desc;
+    ZeroMemory(&desc, sizeof(desc));
+    desc.Width = width;
+    desc.Height = height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = toDxgiFormat(format);
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    desc.CPUAccessFlags = 0;
+    desc.MiscFlags = 0;
+    HRESULT hr = device->CreateTexture2D(&desc, nullptr, target.texture.GetAddressOf());
+    if (FAILED(hr))
     {
-        if (glGetError() != GL_NO_ERROR)
-            throw std::runtime_error("Failed to bind render target texture for stream");
+        std::printf("Failed to create texture\n");
+        return false;
 
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
-        
-        //May no longer be needed.
-
-        if (glGetError() != GL_NO_ERROR)
-            throw std::runtime_error("Failed to setup render target texture parameters");
-
-        glTexImage2D(GL_TEXTURE_2D, 0, toGlInternalFormat(format), width, height, 0, toGlFormat(format), toGlType(format), nullptr);
-        if (glGetError() != GL_NO_ERROR)
-            throw std::runtime_error("Failed to create render target texture for stream");
     }
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    glGenFramebuffers(1, &target.frameBuffer);
-    if (glGetError() != GL_NO_ERROR)
-        throw std::runtime_error("Failed to create render target framebuffer for stream");
-
-    glBindFramebuffer(GL_FRAMEBUFFER, target.frameBuffer);
+    D3D11_RENDER_TARGET_VIEW_DESC rtvDesc;
+    ZeroMemory(&rtvDesc, sizeof(rtvDesc));
+    rtvDesc.Format = desc.Format;
+    rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+    hr = device->CreateRenderTargetView(target.texture.Get(), &rtvDesc, target.view.GetAddressOf());
+    if (FAILED(hr))
     {
-        if (glGetError() != GL_NO_ERROR)
-            throw std::runtime_error("Failed to bind render target framebuffer for stream");
-
-        glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target.texture, 0);
-        if (glGetError() != GL_NO_ERROR)
-            throw std::runtime_error("Failed to attach render target texture for stream");
-
-        GLenum buffers[] = { GL_COLOR_ATTACHMENT0 };
-        glDrawBuffers(1, buffers);
-        if (glGetError() != GL_NO_ERROR)
-            throw std::runtime_error("Failed to set draw buffers for stream");
-
-        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-            throw std::runtime_error("Failed fame buffer status check");
+        std::printf("Failed to create render target view\n");
+        return false;
     }
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
 }
 
+struct Texture
+{
+    uint32_t width = 0;
+    uint32_t height = 0;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> resource;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
+};
+
+std::optional<Texture> createTexture(Microsoft::WRL::ComPtr<ID3D11Device> device, ImageFrameData image)
+{
+    Texture texture;
+    texture.width = image.width;
+    texture.height = image.height;
+
+    D3D11_TEXTURE2D_DESC rtDesc;
+    ZeroMemory(&rtDesc, sizeof(D3D11_TEXTURE2D_DESC));
+    rtDesc.Width = texture.width;
+    rtDesc.Height = texture.height;
+    rtDesc.MipLevels = 1;
+    rtDesc.ArraySize = 1;
+    rtDesc.Format = toDxgiFormat(image.format);
+    rtDesc.SampleDesc.Count = 1;
+    rtDesc.Usage = D3D11_USAGE_DEFAULT;
+    rtDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    rtDesc.CPUAccessFlags = 0;
+    rtDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+    if (FAILED(device->CreateTexture2D(&rtDesc, nullptr, texture.resource.GetAddressOf())))
+        return std::nullopt;
+
+    return texture;
+}
+
+
+void LogToD3(RenderStream& rs, std::string msg, int level)
+{
+    auto s = std::to_string(level) + ": " + msg;
+    RS_LOG(s.c_str());
+}
+
+std::string GetLaunchDirectory() {
+    char buffer[MAX_PATH];
+	GetModuleFileNameA(NULL, buffer, MAX_PATH);
+	std::string::size_type pos = std::string(buffer).find_last_of("\\/");
+	return std::string(buffer).substr(0, pos);
+
+}
+
+#undef main
 
 int main(int argc, char* argv[])
 {
-   //  while (!::IsDebuggerPresent())
-    //    ::Sleep(100);
+    //while (!::IsDebuggerPresent())
+   //     ::Sleep(100);
 
+
+    //Configure spdlog file
+
+    std::string logFile = GetLaunchDirectory() + "\\SPRS.log";
+
+    auto logger = spdlog::basic_logger_mt("Spout Logger", logFile);
 
   // Setup argpraeser
-    argparse::ArgumentParser program("ZeroSpace SpoutBridge");
-
+    argparse::ArgumentParser program("SpoutRS");
 
     program.add_argument("--windowed", "-w").help("Render Visible Window")
         .default_value(false)
         .implicit_value(true);
 
-    program.add_argument("--remove_sender_names", "-r").help("Sets the default behavior to remove sender names from the list of available senders.")
+    program.add_argument("--clearsenders", "-r").help("Sets the default behavior to remove sender names from the list of available senders.")
         .default_value(false)
         .implicit_value(true);
 
-    program.add_argument("--inputs", "-i").help("Presents a texture input from disguise as a RenderStream Spout source.")
+    program.add_argument("--input", "-i").help("Presents a texture input from disguise as a RenderStream Spout source.")
 		.default_value(false)
 		.implicit_value(true);
 
-    program.add_argument("--disable_outputs").help("Disables outputs, for use when wanting to just send an output.")
+    program.add_argument("--no-output").help("Disables outputs, for use when wanting to just send an output.")
         .default_value(false)
         .implicit_value(true);
+
+    program.add_argument("--graphics-adapter", "-g").help("Selects the graphics adapter to use.")
+        .default_value(-1)
+        .action([](const std::string& value) { return std::stoi(value); });
+
+    program.add_argument("--store-channels").help("Save the spout senders as channels")
+        .default_value(false)
+		.implicit_value(true);
+
+    program.add_argument("--timeout-limit").help("Sets the timeout limit for the receiver.")
+        .default_value(5000)
+        .action([](const std::string& value) { return std::stoi(value); });
+
 
     try {
         program.parse_args(argc, argv);
     }
     catch (const std::runtime_error& err) {
-        //PNL(err.what());
-        std::printf("Error: %s\n", err.what());
-        std::exit(1);
-    }
-
-    // Setup receiver
-    SpoutReceiver sRecv;
-
-    //Setup Sender
-    SpoutSender sSend;
-    sSend.SetSenderName("RenderStream");
-
-    // Setup Opengl
-
-    // Enable experimental extensions
-    glewExperimental = GL_TRUE;
-
-    // Initialize glfw window system
-    if (!glfwInit())
-    {
-
-        std::printf("GLFW failed to init\n");
-        glfwTerminate();
+       logger->info("Error: {}", err.what());
         return 1;
     }
 
-    // Set Opengl Versions (P.S. If you accidentally put two of these like I did you will get a very strange read access error or something IDK)
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-
-    // Makes the window all floaty and see-through.
-    glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GL_TRUE);
-
-    //Control window visibility
-    bool isWindowed = false;
-    if (program["--windowed"] == true) {
-        glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
-        isWindowed = true;
-    }
-    else {
-        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-
-    }
-
-    bool isRemoveSenders = false;
-    if (program["--remove_sender_names"] == true) {
-        isRemoveSenders = true;
-    }
-
-	bool isInput = false;
-    if (program["--inputs"] == true) {
-		isInput = true;
-    }
-
-    bool isOutputDisabled = false;
-    if (program["--disable_outputs"] == true) {
-        isOutputDisabled = true;
-    }
+    bool Windowed = program.get<bool>("--windowed");
+    bool RemoveSenders = program.get<bool>("--clearsenders");
+	bool EnableInput = program.get<bool>("--input");
+    bool DisableOutput = program.get<bool>("--no-output");
+    int graphicsAdapter = program.get<int>("--graphics-adapter");
+    bool StoreChannels = program.get<bool>("--store-channels");
+    int timeoutLimit = program.get<int>("--timeout-limit");
 
 
-    // A modern (and possibly messy) window pointer setup.
-    // void(*)(GLFWwindow*) is a placeholder (any) type for the last arguments which is what will be called when the pointer needs to be released.
-    std::unique_ptr<GLFWwindow, void (*)(GLFWwindow*)> window(glfwCreateWindow(1280, 720, "ZeroSpace SpoutBridge (Non-Commerical)", nullptr, nullptr), glfwDestroyWindow);
 
-    // Check that the pointer is not a nullptr
-    if (!window)
-    {
-        std::printf("Failed to create GLFW window\n");
-        glfwTerminate();
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) {
+        logger->error("SDL_Init Error: {}", SDL_GetError());
         return 1;
     }
 
-    int bufferWidth, bufferHeight;
+#ifdef SDL_HINT_IME_SHOW_UI
+    SDL_SetHint(SDL_HINT_IME_SHOW_UI, "1");
+#endif
 
-    // Get the final draw buffer size.
-    glfwGetFramebufferSize(window.get(), &bufferWidth, &bufferHeight);
+    SDL_WindowFlags window_flags = (SDL_WindowFlags)(SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+    std::unique_ptr<SDL_Window, void (*)(SDL_Window*)> window(SDL_CreateWindow("SpoutIP", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, window_flags), SDL_DestroyWindow);
 
-    // I kind of don't know exactly what this does yet.
-    glfwMakeContextCurrent(window.get());
+    if (!Windowed) {
+        SDL_HideWindow(window.get());
+    }
 
-    // Initializes glew.
-    if (glewInit() != GLEW_OK)
-    {
-        std::printf("Failed to initialize GLEW\n");
-        // Old way of handling this.
-        // glfwDestroyWindow(window.get());
-        // Smart way of handling this.
-        window.reset();
-        glfwTerminate();
+    SDL_SysWMinfo wmInfo;
+    SDL_VERSION(&wmInfo.version);
+    if (!SDL_GetWindowWMInfo(window.get(), &wmInfo)) {
+        logger->error("Failed to get window information: {}", SDL_GetError());
         return 1;
+    }
+
+    HWND hwnd = wmInfo.info.win.window;
+
+    WindowFormat windowFormat;
+
+
+    GraphicsSystem Graphics(logger);
+
+    //Get the graphics adapters
+    std::vector<std::pair<std::string, int>> adapters = Graphics.GetGraphicsAdapters();
+    if (adapters.empty()) {
+        std::printf("No graphics adapters found\n");
+        return 1;
+    }
+
+    Graphics.SetGraphicsAdapter(graphicsAdapter);
+    Graphics.InitializeSystem(hwnd);
+
+    auto D3DDevice = Graphics.GetDevice();
+    auto D3DContext = Graphics.GetContext();
+
+    Microsoft::WRL::ComPtr<ID3D11VertexShader> vertexShader;
+    HRESULT result = D3DDevice->CreateVertexShader(v_main, sizeof(v_main), nullptr, vertexShader.GetAddressOf());
+    if (FAILED(result)) {
+        logger->error("Failed to create vertex shader");
+        return 1;
+    }
+
+    // Create pixel shader
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> pixelShader;
+    result = D3DDevice->CreatePixelShader(p_main, sizeof(p_main), nullptr, pixelShader.GetAddressOf());
+    if (FAILED(result)) {
+        logger->error("Failed to create pixel shader");
+        return 1;
+    }
+
+
+
+    // Input layout
+    D3D11_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+    };
+
+    // Create input layout
+    Microsoft::WRL::ComPtr<ID3D11InputLayout>  inputLayout;
+    result = D3DDevice->CreateInputLayout(layout, ARRAYSIZE(layout), v_main, sizeof(v_main), inputLayout.GetAddressOf());
+    if (FAILED(result)) {
+        logger->error("Failed to create input layout");
+        return 1;
+    }
+
+    // Create vertex buffer
+    D3D11_BUFFER_DESC vertexBufferDesc = {};
+    vertexBufferDesc.Usage = D3D11_USAGE_DEFAULT;
+    vertexBufferDesc.ByteWidth = sizeof(quad);
+    vertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+
+    D3D11_SUBRESOURCE_DATA initData = {};
+    initData.pSysMem = quad;
+
+    Microsoft::WRL::ComPtr<ID3D11Buffer> vertexBuffer;
+    result = D3DDevice->CreateBuffer(&vertexBufferDesc, &initData, vertexBuffer.GetAddressOf());
+    if (FAILED(result)) {
+        logger->error("Failed to create vertex buffer");
+        return 1;
+    }
+
+    //Create sampler
+    D3D11_SAMPLER_DESC samplerDesc = {};
+    samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samplerDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    samplerDesc.MinLOD = 0;
+    samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
+
+    Microsoft::WRL::ComPtr<ID3D11SamplerState> samplerState;
+    result = D3DDevice->CreateSamplerState(&samplerDesc, samplerState.GetAddressOf());
+    if (FAILED(result)) {
+		logger->error("Failed to create sampler state");
+		return 1;
+	}
+	
+
+
+
+    if (Windowed) {
+        //Create a directx swap chain for the window.
+        //Should maybe use SDL
     }
 
     // Create renderstream object
@@ -384,318 +446,272 @@ int main(int argc, char* argv[])
     // I also found out it will do this if it is not compiled for x64 :(
     rs.initialise();
 
-    // Get the window contexts from the native platform.
-    // Since RS is windows only we can just get the native windows types directly.
-    // Alternative is to wrap it in platform agnostic class.
-    HGLRC hc = glfwGetWGLContext(window.get());
-    HDC dc = GetDC(glfwGetWin32Window(window.get()));
-
-    // Check that theese are not null.
-    if (!hc)
-    {
-        std::printf("Unable to get WGL Context\n");
-        //d3 logging rs_logToD3();
-        return 1;
-    }
-
-    if (!dc)
-    {
-        std::printf("Unable to get native window\n");
-        return 1;
-    }
 
     // Initialize renderstream with opengl support.
-    rs.initialiseGpGpuWithOpenGlContexts(hc, dc);
+    rs.initialiseGpGpuWithDX11Device(D3DDevice.Get());
 
     // Setup a stream descriptions pointer.
-    // This does the same vodo magic as the window smart pointer.
-    std::unique_ptr<const StreamDescriptions> header(nullptr);
-
-    // Sets up the rendertarget structs for RS.
-    // Once a texture is tied to an fbo, you basically only work on the fbo from that point on.
-
-    // Create the spout specific rendertarget.
-    RenderTarget SpoutTarget;
-
-    // Set Height and Width For Receivers
-    int SpoutWidth = 0;
-    int SpoutHeight = 0;
-
-    //Cleaner Implmentation
-    //Must pass non 0 values
-    generateGlTexture(SpoutTarget, 1280, 720, RS_FMT_RGBA32F);
-
-    // Generate Map for render targets.
-    std::unordered_map<StreamHandle, RenderTarget> renderTargets;
-
-    // Spout Incoming texture target
-    RenderTarget SpoutIncomingTarget;
-
-    // Set Height and Width For Incoming target;
-    int SpoutIncomingWidth = 0;
-    int SpoutIncomingHeight = 0;
+    std::unique_ptr<const StreamDescriptions> Descriptions(nullptr);
 
 
-    std::vector<std::string> SenderNames;
     ScopedSchema schema;
 
-    if (isOutputDisabled) {
-        generateSchema(SenderNames, schema, isInput, false);
-        rs.setSchema(&schema.schema);
-        rs.saveSchema(argv[0], &schema.schema);
-    } else
-    //Setup loading the schema
-    {
-        // Loading a schema from disk is useful if some parts of it cannot be generated during runtime (ie. it is exported from an editor) 
-        // or if you want it to be user-editable
+    size_t nSenders = 0;
+
+    try {
         const Schema* importedSchema = rs.loadSchema(argv[0]);
-        if (importedSchema && importedSchema->scenes.nScenes > 0)
-            std::printf("A schema existed on disk");
+        schema.schema = *importedSchema;
+    }
+    catch (const RenderStreamError& e)
+    {
+        if (e.error == RS_ERROR_NOTFOUND)
+        {
+            logger->info("No schema found on disk");
+        }
+        else
+        {
+            logger->info("Failed to load schema: {}", e.what());
+        }
     }
 
+    std::string pr = "Graphics Adapters:";
+    logger->info(pr.c_str());
+    RS_LOG(pr.c_str());
+    for (auto& g : adapters) {
+        std::string p = g.first + " : " + std::to_string(g.second);
+        logger->info(p);
+		RS_LOG(p.c_str());
+	}
+    
+    //Move this into graphics
+    Texture InputTexture;
+    spoutDirectX SpoutDX;
+    spoutSenderNames SpoutSender;
+    spoutFrameCount SpoutFrame;
+    bool SpoutInit = false;
+    HANDLE SpoutSharedHandle = nullptr;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> SpoutTexture;
 
-    while (!glfwWindowShouldClose(window.get()))
+
+
+    std::unordered_map<StreamHandle, RenderTarget> renderTargets;
+
+    std::atomic_bool isRunning = true;
+
+    while (true)
     {
         // Get the sender names.
-
-        glfwPollEvents();
-
         
-        if (!isOutputDisabled)
-        {
-            std::vector<std::string> Senders = getSpoutSenders(sRecv);
 
-            if (SenderNames.size() != Senders.size()) {
-                //Handles adding new senders without breaking order;
-                for (auto x : Senders) {
-                    if (std::find(SenderNames.begin(), SenderNames.end(), x) == SenderNames.end()) {
-                        SenderNames.push_back(x);
-                    }
-                    else {
-                        if (isRemoveSenders) {
-                            for (auto y : SenderNames) {
-                                if (std::find(Senders.begin(), Senders.end(), y) == Senders.end()) {
-                                    SenderNames.erase(std::remove(SenderNames.begin(), SenderNames.end(), y), SenderNames.end());
-                                }
-                            }
+        if (!DisableOutput) {
 
-                                }
-                            }
-                    // SenderNames = Senders;
-                    generateSchema(SenderNames, schema, isInput);
+            int nSenders_u = Graphics.GetSpoutSenderCount();
+            if (nSenders_u != nSenders) {
+                    nSenders = nSenders_u;
+                    LogToD3(rs, "Found " + std::to_string(nSenders), 0);
+                    logger->info("Found {} Spout Senders", nSenders);
+                    std::set<std::string> senders = Graphics.GetSpoutSenders();
+                    GenerateRenderStreamSchema(senders, schema, EnableInput, StoreChannels);
                     rs.setSchema(&schema.schema);
                     rs.saveSchema(argv[0], &schema.schema);
-                        }
-                    }
-
-            if (sRecv.IsUpdated())
-            {
-                glBindTexture(GL_TEXTURE_2D, SpoutTarget.texture);
-                {
-                    if (glGetError() != GL_NO_ERROR)
-                        throw std::runtime_error("Failed to bind render target texture for stream");
-                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, sRecv.GetSenderWidth(), sRecv.GetSenderHeight(), 0, GL_RGBA, GL_FLOAT, nullptr);
-                    if (glGetError() != GL_NO_ERROR)
-                        throw std::runtime_error("Failed to generate spout texture");
-                }
-                glBindTexture(GL_TEXTURE_2D, 0);
-                SpoutWidth = sRecv.GetSenderWidth();
-                SpoutHeight = sRecv.GetSenderHeight();
             }
-            // Need to create a spout specific texture to read into.
-            // Putting true in the function fixes the inverted texture display which I'm too much of a n00b to solve.
-            if (sRecv.ReceiveTexture(SpoutTarget.texture, GL_TEXTURE_2D, false))
-            {
-#ifdef DEBUG
-                std::printf("frame received\n");
-                PNL("frame received")
-#else
 
-#endif
-            }
-            if (glGetError() != GL_NO_ERROR)
-                throw std::runtime_error("Failed Receiving frame from spout.");
         }
-            // Clears the render window.
-           // glClearColor(0.f, 0.f, 0.f, 0.f);
-          //  glClear(GL_COLOR_BUFFER_BIT);
 
-            // Copy from spout framebuffer to the main window FBO.
-
-            if (isWindowed) {
-
-                glBindFramebuffer(GL_READ_FRAMEBUFFER, SpoutTarget.frameBuffer);
-                {
-                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-                    {
-                        if (glGetError() != GL_NO_ERROR)
-                            throw std::runtime_error("Failed to bind render target texture for stream");
-
-                        glViewport(0, 0, SpoutWidth, SpoutHeight);
-
-                        glBlitFramebuffer(0, 0, SpoutWidth, SpoutHeight, 0, 720, 1280, 0,
-                            GL_COLOR_BUFFER_BIT, GL_NEAREST);
-                        if (glGetError() != GL_NO_ERROR)
-                            throw std::runtime_error("Failed to bind render target texture for stream");
-                    }
-                }
-                glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-
-            }
-
-
-            // Handle sending the frame to renderstream.
-            auto awaitResult = rs.awaitFrameData(5000);
-            if (std::holds_alternative<RS_ERROR>(awaitResult))
+        auto awaitResult = rs.awaitFrameData(timeoutLimit);
+        if (std::holds_alternative<RS_ERROR>(awaitResult))
+        {
+            RS_ERROR err = std::get<RS_ERROR>(awaitResult);
+            // Update the streams pointer when a change error occurs.
+            if (err == RS_ERROR_STREAMS_CHANGED)
             {
-                RS_ERROR err = std::get<RS_ERROR>(awaitResult);
-                // Update the streams pointer when a change error occurs.
-                if (err == RS_ERROR_STREAMS_CHANGED)
-                {
-                    header.reset(rs.getStreams());
-                    const size_t numStreams = header ? header->nStreams : 0;
-                    for (size_t i = 0; i < numStreams; ++i)
-                    {
-                        const StreamDescription& description = header->streams[i];
-                        RenderTarget& target = renderTargets[description.handle];
-						generateGlTexture(target, description.width, description.height, description.format);
-                    }
-
-                    std::printf("Found %d Streams\n", header->nStreams);
-                    // PNL(fmt::sprintf("Found %d Streams\n", header->nStreams))
-                    continue;
-                }
-                else if (err == RS_ERROR_TIMEOUT)
-                {
-                    continue;
-                }
-                else if (err != RS_ERROR_SUCCESS)
-                {
-                    std::printf("rs_awaitFrameData returned %d", err);
-                    break;
-                }
-            }
-
-            const FrameData& frameData = std::get<FrameData>(awaitResult);
-            if (frameData.scene >= schema.schema.scenes.nScenes)
-            {
-                std::printf("Scene out of bounds\n");
-                //   PNL("Scene out of bounds");
-                continue;
-            }
-
-            if (!isOutputDisabled) {
-                sRecv.SetReceiverName(SenderNames[frameData.scene].c_str());
-            }
-            //Handle receiving texture
-
-            if (isInput) {
-                //Should move this to another thread.
-
-                const auto& scene = schema.schema.scenes.scenes[frameData.scene];
-                ParameterValues values = rs.getFrameParameters(scene);
-
-                ImageFrameData image = values.get<ImageFrameData>("spout_input");
-                if (SpoutIncomingWidth != image.width || SpoutIncomingHeight != image.height)
-                {
-                    generateGlTexture(SpoutIncomingTarget, image.width, image.height, image.format);
-                    SpoutIncomingWidth = image.width;
-                    SpoutIncomingHeight = image.height;
-                }
-
-                SenderFrameTypeData Idata;
-
-                Idata.gl.texture = SpoutIncomingTarget.texture;
-
-                rs.getFrameImage(image.imageId, RS_FRAMETYPE_OPENGL_TEXTURE, Idata);
-
-                //Ideally thise should operate in a separate thread.
-
-                sSend.SendTexture(
-                    Idata.gl.texture,
-                    GL_TEXTURE_2D,
-                    SpoutIncomingWidth,
-                    SpoutIncomingHeight,
-                    false
-                );
-            }
-            if (!isOutputDisabled) {
-
-
-                const size_t numStreams = header ? header->nStreams : 0;
+                Descriptions.reset(rs.getStreams());
+                const size_t numStreams = Descriptions ? Descriptions->nStreams : 0;
                 for (size_t i = 0; i < numStreams; ++i)
                 {
-                    const StreamDescription& description = header->streams[i];
-
-                    CameraResponseData cameraData;
-                    cameraData.tTracked = frameData.tTracked;
-                    try
-                    {
-                        cameraData.camera = rs.getFrameCamera(description.handle);
-                    }
-                    catch (const RenderStreamError& e)
-                    {
-                        /*
-                        if (e.error == RS_ERROR_NOTFOUND)
-                            continue;
-                        throw;
-                        */
-                    }
-
-                    {
-
-                        const RenderTarget& target = renderTargets.at(description.handle);
-
-                        glBindFramebuffer(GL_FRAMEBUFFER, target.frameBuffer);
-                        {
-                            if (glGetError() != GL_NO_ERROR)
-                                throw std::runtime_error("Failed to bind xxx read fbo");
-                            //  glClear(GL_COLOR_BUFFER_BIT);
-                        }
-
-                        glClearColor(0.f, 0.f, 0.f, 0.f);
-                        glClear(GL_COLOR_BUFFER_BIT);
-                        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-                        //   glViewport(0, 0, SpoutWidth, SpoutHeight);
-
-                           // Set this back to 0
-                        glBindFramebuffer(GL_READ_FRAMEBUFFER, SpoutTarget.frameBuffer);
-                        {
-                            if (glGetError() != GL_NO_ERROR)
-                                throw std::runtime_error("Failed to bind 1111 read fbo");
-                            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, target.frameBuffer);
-                            {
-                                if (glGetError() != GL_NO_ERROR)
-                                    throw std::runtime_error("Failed to bind read fbo");
-                                glBlitFramebuffer(0, 0, SpoutWidth, SpoutHeight, 0, 0, description.width, description.height,
-                                    GL_COLOR_BUFFER_BIT, GL_NEAREST);
-                                if (glGetError() != GL_NO_ERROR)
-                                    throw std::runtime_error("Failed to blit.");
-                            }
-                        }
-                        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-                        if (glGetError() != GL_NO_ERROR)
-                            throw std::runtime_error("Failed to bind 000 read fbo");
-
-                        //glFinish();
-
-                        SenderFrameTypeData data;
-                        data.gl.texture = target.texture;
-
-                        FrameResponseData response = {};
-                        response.cameraData = &cameraData;
-
-                        // Send the frame to renderstream
-                        // I would hope this would generate some form of error, but it doesn't.
-                        rs.sendFrame(description.handle, RS_FRAMETYPE_OPENGL_TEXTURE, data, &response);
-                    }
-                   
+                    const StreamDescription& description = Descriptions->streams[i];
+                    RenderTarget& target = renderTargets[description.handle];
+                    GenerateDX11Texture(Graphics.GetDevice(), target, description.width, description.height, description.format);
+                   // Graphics.AddSpoutSource(description.channel);
                 }
+
+                logger->info("Found {} Streams", Descriptions->nStreams);
+                // PNL(fmt::sprintf("Found %d Streams\n", header->nStreams))
+                continue;
+            }
+            else if (err == RS_ERROR_TIMEOUT)
+            {
+                continue;
+            }
+            else if (err != RS_ERROR_SUCCESS)
+            {
+                logger->info("rs_awaitFrameData returned success");
+                break;
+            }
+        }
+
+        //Get the
+
+        const FrameData& frameData = std::get<FrameData>(awaitResult);
+        const size_t numStreams = Descriptions ? Descriptions->nStreams : 0;
+        if (frameData.scene >= schema.schema.scenes.nScenes)
+        {
+            logger->error("Scene out of bounds: {}", frameData.scene);
+            //   PNL("Scene out of bounds");
+            continue;
+        }
+
+       // LogToD3(rs, "Scene: " + std::to_string(frameData.scene), 0);
+      //  LogToD3(rs, "Frame: " + std::string(schema.schema.scenes.scenes[frameData.scene].name), 0);
+
+        std::string sceneName = schema.schema.scenes.scenes[frameData.scene].name;
+
+      // logger->info("Scene: {}", sceneName);
+
+        if (EnableInput) {
+            const auto& scene = schema.schema.scenes.scenes[frameData.scene];
+            ParameterValues values = rs.getFrameParameters(scene);
+            ImageFrameData image = values.get<ImageFrameData>("spout_input");
+            if (image.height != InputTexture.height || image.width != InputTexture.width) {
+				auto tex = createTexture(D3DDevice, image);
+                if (tex) {
+					InputTexture = tex.value();
+				}
+				else {
+					logger->error("Failed to create texture");
+					continue;
+				}
+                if (SpoutInit) {
+                    SpoutTexture.Reset();
+                    SpoutDX.CreateSharedDX11Texture(Graphics.GetDevice().Get(), image.width, image.height, toDxgiFormat(image.format), SpoutTexture.GetAddressOf(), SpoutSharedHandle);
+                    SpoutSender.UpdateSender("Disguise", image.width, image.height, SpoutSharedHandle);
+                }
+			}
+            SenderFrame data;
+            data.type = RS_FRAMETYPE_DX11_TEXTURE;
+            data.dx11.resource = InputTexture.resource.Get();
+            rs.getFrameImage(image.imageId, data);
+            if (!SpoutInit) {
+                SpoutDX.CreateSharedDX11Texture(Graphics.GetDevice().Get(), image.width, image.height, toDxgiFormat(image.format), SpoutTexture.GetAddressOf(), SpoutSharedHandle);
+                SpoutInit = SpoutSender.CreateSender("Disguise", image.width, image.height, SpoutSharedHandle, (DWORD)toDxgiFormat(image.format));
+                
+               // SpoutFrame.CreateAccessMutex("Disguise");
+                SpoutFrame.EnableFrameCount("Disguise");
+            }
+            if (SpoutFrame.CheckAccess()) {
+                D3DContext->CopyResource(SpoutTexture.Get(), InputTexture.resource.Get());
+                D3DContext->Flush();
+                SpoutFrame.SetNewFrame();
+                SpoutFrame.AllowAccess();
+            }
+        }
+
+
+        if (!DisableOutput) {
+            Graphics.AddSpoutSource(sceneName);
+        }
+        Graphics.ReadFrame(sceneName);
+
+        for (size_t i = 0; i < numStreams; ++i)
+        {
+            const StreamDescription& description = Descriptions->streams[i];
+
+            CameraResponseData cameraData;
+            cameraData.tTracked = frameData.tTracked;
+            try
+            {
+                cameraData.camera = rs.getFrameCamera(description.handle);
+            }
+            catch (const RenderStreamError& e)
+            {
+                // It's possible to race here and be processing a request
+                // which uses data from before streams changed.
+                // TODO: Fix this in the API dll
+                if (e.error == RS_ERROR_NOTFOUND)
+                    continue;
+
+                throw;
             }
 
-            glfwSwapBuffers(window.get());
+            const RenderTarget& target = renderTargets.at(description.handle);
+            FrameResponseData response = {};
+            response.cameraData = &cameraData;
+
+            //Check if the description channel matches a spout channel
+
+            Graphics.AddSpoutSource(description.channel);
+
+            auto stagingTexture = Graphics.GetTexture(description.channel);
+            auto stagingSRV = Graphics.GetShaderResourceView(description.channel);
+            if (stagingTexture && stagingSRV) {
+                Graphics.ReadFrame(description.channel);
+            }
+
+            if (!stagingTexture || !stagingSRV) {
+                stagingTexture = Graphics.GetTexture(sceneName);
+                stagingSRV = Graphics.GetShaderResourceView(sceneName);
+            }
+
+            
+            //auto stagingTexture = Graphics.GetTexture(sceneName);
+           //auto stagingSRV = Graphics.GetShaderResourceView(sceneName);
+
+            if (!D3DContext) {
+                logger->error("Failed to get context");
+                continue;
+            }
+            //Using a pixel shader and vertex shader we will blit the output
+
+            D3DContext->OMSetRenderTargets(1, target.view.GetAddressOf(), nullptr);
+
+            const float clearColour[4] = { 0.f, 0.8f, 0.f, 0.f };
+            D3DContext->ClearRenderTargetView(target.view.Get(), clearColour);
+
+            D3D11_VIEWPORT viewport;
+            ZeroMemory(&viewport, sizeof(D3D11_VIEWPORT));
+            viewport.Width = static_cast<float>(description.width);
+            viewport.Height = static_cast<float>(description.height);
+            viewport.MinDepth = 0;
+            viewport.MaxDepth = 1;
+            D3DContext->RSSetViewports(1, &viewport);
+
+
+            // Set what the inputs to the shader are
+
+            UINT stride = sizeof(Vertex);
+            UINT offset = 0;
+            D3DContext->IASetInputLayout(inputLayout.Get());
+            D3DContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            D3DContext->IASetVertexBuffers(0, 1, vertexBuffer.GetAddressOf(), &stride, &offset);
+
+
+           // D3DContext->IASetIndexBuffer(indexBuffer.Get(), DXGI_FORMAT_R32_UINT, 0);
+ 
+            // Set the shaders
+            D3DContext->VSSetShader(vertexShader.Get(), nullptr, 0);
+
+            D3DContext->PSSetSamplers(0, 1, samplerState.GetAddressOf());
+            D3DContext->PSSetShaderResources(0, 1, stagingSRV.GetAddressOf());
+
+            D3DContext->PSSetShader(pixelShader.Get(), nullptr, 0);
+
+
+
+           // D3DContext->PSSetShaderResources(0, 1, stagingSRV.GetAddressOf());
+            D3DContext->Draw(6,0);
+
+            //Check for errors
+
+
+            SenderFrame data;
+            data.type = RS_FRAMETYPE_DX11_TEXTURE;
+            data.dx11.resource = target.texture.Get();
+
+            rs.sendFrame(description.handle, data, response);
         }
+
+
+    }
         
     return 0;
 }

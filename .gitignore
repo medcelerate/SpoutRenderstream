@@ -4,3 +4,6 @@ Win32/
 x64/
 .vs/
 build/
+vckpg_installed/
+/vcpkg_installed
+/logs
