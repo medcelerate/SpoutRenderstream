@@ -1,4 +1,4 @@
-
+//Copyright (C) 2023–2025 Evan Clark
 #define NOMINMAX
 
 #include <cstdio>
