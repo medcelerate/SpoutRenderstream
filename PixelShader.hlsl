@@ -1,4 +1,4 @@
-
+//Copyright (C) 2023–2025 Evan Clark
 Texture2D gMyTexture : register(t0);
 // slot s0
 SamplerState gMySampler : register(s0);
