@@ -1,4 +1,4 @@
-
+//Copyright (C) 2023–2025 Evan Clark
 #include <unordered_map>
 #include <string>
 
