@@ -66,7 +66,15 @@ jobs:
         name: upload
         path: upload
     - name: Generate PDF
-      run: npm install -g md-to-pdf && cat README.md | md-to-pdf > Instructions.pdf && cp Instructions.pdf ./upload/
+      # Best-effort README->PDF for the bundle. md-to-pdf drives headless
+      # Chromium, which needs --no-sandbox on ubuntu-latest (24.04 AppArmor
+      # restricts unprivileged user namespaces). continue-on-error so a PDF
+      # hiccup never blocks the release itself.
+      continue-on-error: true
+      run: |
+        npm install -g md-to-pdf
+        cat README.md | md-to-pdf --launch-options '{"args":["--no-sandbox"]}' > Instructions.pdf
+        cp Instructions.pdf ./upload/
     - name: rename
       run: mv ./upload "./ZeroSpaceSpoutBridge-${{github.ref_name}}"
     - name: compress folder
