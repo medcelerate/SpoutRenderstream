@@ -106,7 +106,7 @@ void GenerateRenderStreamSchema(
                 scene.nParameters = 1;
                 scene.parameters = static_cast<RemoteParameter*>(malloc(sizeof(RemoteParameter) * 1));
 
-                RemoteParameter par;
+                RemoteParameter par{};  // zero-init: RS3.0 added RemoteParameter::nElements
                 
                 par.group = "Input";
                 par.displayName = "SpoutInput";
@@ -149,7 +149,7 @@ void GenerateRenderStreamSchema(
         scene.nParameters = 1;
         scene.parameters = static_cast<RemoteParameter*>(malloc(sizeof(RemoteParameter) * 1));
 
-        RemoteParameter par;
+        RemoteParameter par{};  // zero-init: RS3.0 added RemoteParameter::nElements
         par.group = "Input";
         par.displayName = "SpoutInput";
         par.key = "spout_input";

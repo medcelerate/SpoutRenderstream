@@ -497,6 +497,7 @@ private:
         schema.engineVersion = nullptr;
         schema.pluginVersion = nullptr;
         schema.info = nullptr;
+        schema.workingColourSpace = RSColourSpace::RS_COLOUR_SPACE_UNKNOWN;
         schema.channels.nChannels = 0;
         schema.channels.channels = nullptr;
         schema.scenes.nScenes = 0;
@@ -527,6 +528,8 @@ ParameterValues::ParameterValues(RenderStream& rs, const RemoteParameters& scene
             nFloats += 16;
         else if (param.type == RS_PARAMETER_TEXT)
             nTexts++;
+        else if (param.type == RS_PARAMETER_ARRAY)
+            nFloats += param.nElements;
         else
             throw std::logic_error("Unhandled parameter type");
     }
@@ -560,6 +563,8 @@ std::tuple<size_t, RemoteParameterType> ParameterValues::iKey(const std::string&
                 return { iFloat, RS_PARAMETER_TRANSFORM };
             else if (param.type == RS_PARAMETER_TEXT)
                 return { iText, RS_PARAMETER_TEXT };
+            else if (param.type == RS_PARAMETER_ARRAY)
+                return { iFloat, RS_PARAMETER_ARRAY };
             else
                 throw std::logic_error("Unhandled parameter type");
         }
@@ -574,6 +579,8 @@ std::tuple<size_t, RemoteParameterType> ParameterValues::iKey(const std::string&
             iFloat += 16;
         else if (param.type == RS_PARAMETER_TEXT)
             iText++;
+        else if (param.type == RS_PARAMETER_ARRAY)
+            iFloat += param.nElements;
         else
             throw std::logic_error("Unhandled parameter type");
     }

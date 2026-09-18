@@ -3,34 +3,32 @@ name: MSBuild
 on:
   push:
     tags: "v*"
+  workflow_dispatch:
 
 env:
   # Path to the solution file relative to the root of the project.
   SOLUTION_FILE_PATH: .
-
   # Configuration type to build.
-  # You can convert this to a build matrix if you need coverage of multiple configuration types.
-  # https://docs.github.com/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
   BUILD_CONFIGURATION: Release
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
     runs-on: windows-latest
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Add MSBuild to PATH
-      uses: microsoft/setup-msbuild@v1.0.2
+      uses: microsoft/setup-msbuild@v2
       with:
         msbuild-architecture: x64
     - name: Setup Cmake
       uses: lukka/get-cmake@latest
     - name: Restore artifacts, or setup vcpkg (do not install any package)
-      uses: lukka/run-vcpkg@v10
+      uses: lukka/run-vcpkg@v11
       with:
         vcpkgGitCommitId: 703a8113f42e794534df5dfc5cece5dabcb949d0
     - name: Integrate vcpkg
@@ -39,73 +37,57 @@ jobs:
     - name: Build
       working-directory: ${{env.GITHUB_WORKSPACE}}
       # Add additional options to the MSBuild command line here (like platform or verbosity level).
-      # See https://docs.microsoft.com/visualstudio/msbuild/msbuild-command-line-reference
       run: msbuild /m /p:Configuration=${{env.BUILD_CONFIGURATION}} ${{env.SOLUTION_FILE_PATH}} /p:VcpkgEnableManifest=true /p:PostBuildEventUseInBuild=false
     - name: RemoveDebugs
       run: rm build/x64/Release/*.pdb
     - name: Copy DLLs
       working-directory: ${{env.GITHUB_WORKSPACE}}
       run: cp Spout.dll build/x64/Release/
-    - name: Copy Licnese
+    - name: Copy License
       working-directory: ${{env.GITHUB_WORKSPACE}}
       run: cp LICENSE build/x64/Release/
     - name: Save Folder
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: upload
         path: build/x64/Release/
-      
+
   upload-release:
 
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     needs: [build]
     permissions: write-all
 
     steps:
-    - uses: actions/checkout@v1
-    - name: Install Node
-      run: sudo apt-get install -y nodejs npm
-    - name: Create Release
-      id: create_release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # This token is provided by Actions, you do not need to create your own token
-      with:
-        tag_name: ${{ github.ref }}
-        release_name: Release ${{ github.ref }}
-        body: |
-          Newest Push
-        draft: false
-        prerelease: false
+    - uses: actions/checkout@v4
     - name: download artifacts
-      uses: actions/download-artifact@v1
+      uses: actions/download-artifact@v4
       with:
         name: upload
+        path: upload
     - name: Generate PDF
       run: npm install -g md-to-pdf && cat README.md | md-to-pdf > Instructions.pdf && cp Instructions.pdf ./upload/
     - name: rename
       run: mv ./upload "./ZeroSpaceSpoutBridge-${{github.ref_name}}"
     - name: compress folder
       run: zip -r "./ZeroSpaceSpoutBridge-${{github.ref_name}}.zip" "./ZeroSpaceSpoutBridge-${{github.ref_name}}"
-    - name: Upload Windows
-      id: upload-windows
-      uses: actions/upload-release-asset@v1.0.1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Create release and upload asset
+      uses: softprops/action-gh-release@v2
       with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: "./ZeroSpaceSpoutBridge-${{github.ref_name}}.zip"
-        asset_name: "ZeroSpaceSpoutBridge-${{github.ref_name}}.zip"
-        asset_content_type: application/zip
-    - name: Make Upload Directory
-      run: >
-        mkdir -p "${{github.ref_name}}" &&
-        cp -r "./ZeroSpaceSpoutBridge-${{github.ref_name}}.zip" "${{github.ref_name}}/"
+        tag_name: ${{ github.ref_name }}
+        name: Release ${{ github.ref_name }}
+        body: |
+          Built against disguise RenderStream RS3.0 headers.
+        # Semver pre-release suffixes (e.g. v2.0.0-beta) publish as prereleases.
+        prerelease: ${{ contains(github.ref_name, '-') }}
+        files: "./ZeroSpaceSpoutBridge-${{github.ref_name}}.zip"
     - name: Upload To Drive
+      # Best-effort: skipped/soft-failed when DRIVE_CREDENTIALS/FOLDER_ID secrets
+      # aren't configured, so the GitHub release still succeeds.
+      continue-on-error: true
       uses: adityak74/google-drive-upload-git-action@v0.3
       with:
           credentials: ${{ secrets.DRIVE_CREDENTIALS }}
-          filename: "${{github.ref_name}}/ZeroSpaceSpoutBridge-${{github.ref_name}}.zip"
+          filename: "./ZeroSpaceSpoutBridge-${{github.ref_name}}.zip"
           folderId: ${{ secrets.FOLDER_ID }}
           overwrite: "false"
-          mirrorDirectoryStructure: "true"
