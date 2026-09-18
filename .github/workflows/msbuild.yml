@@ -42,7 +42,7 @@ jobs:
       run: rm build/x64/Release/*.pdb
     - name: Copy DLLs
       working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: cp Spout.dll build/x64/Release/
+      run: cp lib/Spout.dll build/x64/Release/
     - name: Copy License
       working-directory: ${{env.GITHUB_WORKSPACE}}
       run: cp LICENSE build/x64/Release/
