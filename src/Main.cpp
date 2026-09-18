@@ -90,7 +90,7 @@ void GenerateRenderStreamSchema(
 
 
     if (enableOutput) {
-        scoped.schema.scenes.nScenes = senders.size();
+        scoped.schema.scenes.nScenes = static_cast<uint32_t>(senders.size());
         scoped.schema.scenes.scenes = static_cast<RemoteParameters*>(malloc(sizeof(RemoteParameters) * scoped.schema.scenes.nScenes));
 
         int i = 0;
@@ -128,7 +128,7 @@ void GenerateRenderStreamSchema(
             i++;
 		}
         if (storeChannels) {
-            scoped.schema.channels.nChannels = senders.size();
+            scoped.schema.channels.nChannels = static_cast<uint32_t>(senders.size());
             std::vector<const char*> ptrs;
             ptrs.reserve(senders.size() + 1);
             scoped.schema.channels.channels = static_cast<const char**>(malloc(sizeof(const char*) * scoped.schema.channels.nChannels));
@@ -209,6 +209,7 @@ bool GenerateDX11Texture(
         return false;
     }
 
+    return true;
 }
 
 struct Texture
@@ -346,8 +347,6 @@ int main(int argc, char* argv[])
     }
 
     HWND hwnd = wmInfo.info.win.window;
-
-    WindowFormat windowFormat;
 
 
     GraphicsSystem Graphics(logger);

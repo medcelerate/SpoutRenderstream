@@ -398,9 +398,15 @@ public:
             DXGI_ADAPTER_DESC1 desc;
             adapter->GetDesc1(&desc);
 
-            // Convert the adapter name to a string
-            std::wstring wstrName(desc.Description);
-            std::string strName(wstrName.begin(), wstrName.end());
+            // Convert the adapter name (UTF-16) to a narrow UTF-8 string.
+            std::string strName;
+            int len = WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1,
+                                          nullptr, 0, nullptr, nullptr);
+            if (len > 1) {
+                strName.resize(len - 1);
+                WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1,
+                                    strName.data(), len, nullptr, nullptr);
+            }
 
             // Store the adapter name and index
             adapters.push_back({ strName, i });
